@@ -7,15 +7,17 @@ import { getColorForUser } from './utils/colors';
 
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:4444';
 const ROOM_NAME = 'custom-doc-main';
+const isElectron = !!window.electronAPI?.isElectron;
 
 export default function App() {
   const [user, setUser] = useState(null);
-  const [theme, setTheme] = useState(() => localStorage.getItem('cd-theme') || 'light');
+  const [theme, setTheme] = useState(() => localStorage.getItem('cd-theme') || (isElectron ? 'dark' : 'light'));
   const [fontSize, setFontSize] = useState(() => parseInt(localStorage.getItem('cd-fontSize'), 10) || 16);
   const [connected, setConnected] = useState(false);
-  const [onlineUsers, setOnlineUsers] = useState([]);
+  const [onlineCount, setOnlineCount] = useState(0);
+  const [desktopOnline, setDesktopOnline] = useState(false);
 
-  // ─── Y.js document & WebSocket provider (singleton) ──────────────────────
+  // ─── Y.js doc & provider ─────────────────────────────────────────────────
   const { ydoc, provider } = useMemo(() => {
     const doc = new Y.Doc();
     const prov = new WebsocketProvider(WS_URL, ROOM_NAME, doc, {
@@ -25,37 +27,37 @@ export default function App() {
     return { ydoc: doc, provider: prov };
   }, []);
 
-  useEffect(() => {
-    return () => {
-      provider.destroy();
-      ydoc.destroy();
-    };
-  }, [provider, ydoc]);
+  useEffect(() => () => { provider.destroy(); ydoc.destroy(); }, [provider, ydoc]);
 
   // ─── Connection status ────────────────────────────────────────────────────
   useEffect(() => {
-    const handler = ({ status }) => setConnected(status === 'connected');
-    provider.on('status', handler);
-    return () => provider.off('status', handler);
+    const h = ({ status }) => setConnected(status === 'connected');
+    provider.on('status', h);
+    return () => provider.off('status', h);
   }, [provider]);
 
-  // ─── Awareness: publish local user & track remote users ───────────────────
+  // ─── Awareness ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!user) return;
-
     const c = getColorForUser(user.name);
     provider.awareness.setLocalStateField('user', {
       name: user.name,
       color: c.color,
       colorLight: c.light,
+      isDesktop: isElectron,
     });
 
     const refresh = () => {
-      const list = [];
-      provider.awareness.getStates().forEach((state, clientId) => {
-        if (state.user) list.push({ ...state.user, clientId });
+      let count = 0;
+      let deskOnline = false;
+      provider.awareness.getStates().forEach((state) => {
+        if (state.user) {
+          count++;
+          if (state.user.isDesktop) deskOnline = true;
+        }
       });
-      setOnlineUsers(list);
+      setOnlineCount(count);
+      setDesktopOnline(deskOnline);
     };
 
     provider.awareness.on('change', refresh);
@@ -63,24 +65,20 @@ export default function App() {
     return () => provider.awareness.off('change', refresh);
   }, [provider, user]);
 
-  // ─── Theme persistence ────────────────────────────────────────────────────
+  // ─── Theme ────────────────────────────────────────────────────────────────
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('cd-theme', theme);
   }, [theme]);
 
-  // ─── Font size persistence ────────────────────────────────────────────────
-  useEffect(() => {
-    localStorage.setItem('cd-fontSize', String(fontSize));
-  }, [fontSize]);
+  useEffect(() => { localStorage.setItem('cd-fontSize', String(fontSize)); }, [fontSize]);
 
-  // ─── Restore saved user ───────────────────────────────────────────────────
+  // ─── Restore user ─────────────────────────────────────────────────────────
   useEffect(() => {
-    const saved = localStorage.getItem('cd-userName');
-    if (saved) setUser({ name: saved });
+    const s = localStorage.getItem('cd-userName');
+    if (s) setUser({ name: s });
   }, []);
 
-  // ─── Callbacks ────────────────────────────────────────────────────────────
   const handleSetUser = useCallback((name) => {
     localStorage.setItem('cd-userName', name);
     setUser({ name });
@@ -89,12 +87,7 @@ export default function App() {
   const toggleTheme = useCallback(() => setTheme((t) => (t === 'light' ? 'dark' : 'light')), []);
   const increaseFontSize = useCallback(() => setFontSize((s) => Math.min(s + 2, 32)), []);
   const decreaseFontSize = useCallback(() => setFontSize((s) => Math.max(s - 2, 10)), []);
-  const changeName = useCallback(() => {
-    localStorage.removeItem('cd-userName');
-    setUser(null);
-  }, []);
 
-  // ─── Render ───────────────────────────────────────────────────────────────
   if (!user) {
     return <UserModal onSubmit={handleSetUser} theme={theme} toggleTheme={toggleTheme} />;
   }
@@ -110,8 +103,9 @@ export default function App() {
       increaseFontSize={increaseFontSize}
       decreaseFontSize={decreaseFontSize}
       connected={connected}
-      onlineUsers={onlineUsers}
-      onChangeName={changeName}
+      onlineCount={onlineCount}
+      desktopOnline={desktopOnline}
+      isElectron={isElectron}
     />
   );
 }

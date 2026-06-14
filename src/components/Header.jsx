@@ -1,90 +1,95 @@
-import { Sun, Moon, Plus, Minus, Wifi, WifiOff, UserCircle } from 'lucide-react';
+import {
+  Sun, Moon, Plus, Minus, Wifi, WifiOff,
+  ChevronUp, MousePointer2, Monitor,
+} from 'lucide-react';
 
 export default function Header({
-  theme,
-  toggleTheme,
-  fontSize,
-  increaseFontSize,
-  decreaseFontSize,
-  connected,
-  onlineUsers,
-  userName,
-  onChangeName,
+  theme, toggleTheme, fontSize, increaseFontSize, decreaseFontSize,
+  connected, onlineCount, desktopOnline, isElectron,
+  opacity, onOpacityChange, clickThrough, toggleClickThrough, toggleControls,
 }) {
   return (
-    <header className="header">
-      {/* ── Left: branding ─────────────────────────────────────── */}
+    <header className={`header${isElectron ? ' draggable' : ''}`}>
+      {/* ── Left: brand ──────────────────────────────────────── */}
       <div className="header-left">
-        <div className="logo" aria-hidden="true">
-          <svg width="28" height="28" viewBox="0 0 32 32" fill="none">
-            <rect x="6" y="2" width="20" height="28" rx="3" fill="var(--accent)" />
-            <rect x="10" y="8" width="12" height="2" rx="1" fill="#fff" />
-            <rect x="10" y="13" width="12" height="2" rx="1" fill="#fff" />
-            <rect x="10" y="18" width="8" height="2" rx="1" fill="#fff" />
-          </svg>
-        </div>
-        <h1 className="app-title">Custom Doc</h1>
+        <span className="app-title">ZYTHOS</span>
       </div>
 
-      {/* ── Center: font size control ─────────────────────────── */}
+      {/* ── Center: font size + extras ───────────────────────── */}
       <div className="header-center">
         <div className="font-size-controls">
-          <button
-            onClick={decreaseFontSize}
-            className="control-btn"
-            title="Decrease font size (min 10px)"
-            disabled={fontSize <= 10}
-          >
-            <Minus size={14} />
+          <button onClick={decreaseFontSize} className="ctrl-btn" disabled={fontSize <= 10} title="Decrease">
+            <Minus size={13} />
           </button>
-          <span className="font-size-display">{fontSize}px</span>
-          <button
-            onClick={increaseFontSize}
-            className="control-btn"
-            title="Increase font size (max 32px)"
-            disabled={fontSize >= 32}
-          >
-            <Plus size={14} />
+          <span className="font-size-val">{fontSize}</span>
+          <button onClick={increaseFontSize} className="ctrl-btn" disabled={fontSize >= 32} title="Increase">
+            <Plus size={13} />
           </button>
         </div>
+
+        {/* Opacity slider — exe only */}
+        {isElectron && (
+          <div className="opacity-wrap">
+            <span className="opacity-icon">◐</span>
+            <input
+              type="range"
+              min="8"
+              max="100"
+              value={Math.round(opacity * 100)}
+              onChange={(e) => onOpacityChange(parseInt(e.target.value, 10) / 100)}
+              className="opacity-slider"
+              title={`Opacity ${Math.round(opacity * 100)}%`}
+            />
+          </div>
+        )}
       </div>
 
-      {/* ── Right: users, status, theme, profile ──────────────── */}
+      {/* ── Right: status + actions ──────────────────────────── */}
       <div className="header-right">
-        {/* Online user avatars */}
-        <div className="online-users">
-          {onlineUsers.map((u, i) => (
-            <div
-              key={u.clientId}
-              className="user-avatar"
-              style={{
-                backgroundColor: u.color,
-                zIndex: onlineUsers.length - i,
-              }}
-              title={u.name}
-            >
-              {u.name.charAt(0).toUpperCase()}
+        {/* Web-only controls */}
+        {!isElectron && (
+          <>
+            {/* Connection pill */}
+            <div className={`conn-pill ${connected ? 'on' : 'off'}`}>
+              {connected ? <Wifi size={12} /> : <WifiOff size={12} />}
+              <span>{connected ? 'Live' : 'Offline'}</span>
+              {connected && <span className="conn-count">{onlineCount}</span>}
             </div>
-          ))}
-        </div>
 
-        {/* Connection badge */}
-        <div
-          className={`connection-status ${connected ? 'connected' : 'disconnected'}`}
-          title={connected ? 'Real-time sync active' : 'Reconnecting…'}
-        >
-          {connected ? <Wifi size={14} /> : <WifiOff size={14} />}
-          <span className="connection-label">{connected ? 'Live' : 'Offline'}</span>
-        </div>
+            {/* Desktop status */}
+            <div className={`desk-status ${desktopOnline ? 'on' : 'off'}`} title={desktopOnline ? 'Desktop app is online' : 'Desktop app is offline'}>
+              <Monitor size={13} />
+              <span>{desktopOnline ? 'ON' : 'OFF'}</span>
+            </div>
+
+            {/* Click-through control for exe */}
+            <button
+              onClick={toggleClickThrough}
+              className={`ct-btn ${clickThrough ? 'active' : ''}`}
+              title={clickThrough ? 'Exe is click-through — click to disable' : 'Make exe click-through'}
+            >
+              <MousePointer2 size={13} />
+              <span>{clickThrough ? 'Clickable' : 'Locked'}</span>
+            </button>
+          </>
+        )}
+
+        {/* Exe click-through indicator */}
+        {isElectron && clickThrough && (
+          <div className="ct-badge">
+            <span className="ct-dot-blink" />
+            CT
+          </div>
+        )}
 
         {/* Theme toggle */}
-        <button onClick={toggleTheme} className="control-btn theme-toggle" title="Toggle dark / light mode">
-          {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
+        <button onClick={toggleTheme} className="ctrl-btn theme-btn" title="Toggle theme">
+          {theme === 'light' ? <Moon size={15} /> : <Sun size={15} />}
         </button>
 
-        {/* User profile */}
-        <button onClick={onChangeName} className="control-btn user-btn" title={`Signed in as ${userName} — click to change`}>
-          <UserCircle size={20} />
+        {/* Collapse controls */}
+        <button onClick={toggleControls} className="ctrl-btn" title="Hide controls">
+          <ChevronUp size={15} />
         </button>
       </div>
     </header>
