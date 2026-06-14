@@ -443,8 +443,8 @@ html, body {
   color: #383a42;
 }
 .editor-content pre code {
-  background: transparent; border: none; padding: 0; color: inherit;
-  font-size: .88em; color: var(--text-1);
+  background: transparent; border: none; padding: 0;
+  font-size: .88em;
 }
 
 /* hr */
@@ -463,34 +463,40 @@ html, body {
 .editor-content u { text-decoration-thickness: 1.5px; text-underline-offset: 2px; }
 
 /* ── Syntax highlighting (dark — Catppuccin-inspired) ────────────────────── */
-.hljs-keyword { color: #cba6f7; }
-.hljs-string { color: #a6e3a1; }
-.hljs-number, .hljs-literal { color: #fab387; }
-.hljs-comment, .hljs-quote { color: #6c7086; font-style: italic; }
-.hljs-function, .hljs-title { color: #89b4fa; }
-.hljs-built_in { color: #f9e2af; }
-.hljs-variable, .hljs-template-variable { color: #f38ba8; }
-.hljs-type, .hljs-class { color: #f9e2af; }
-.hljs-attr, .hljs-attribute { color: #fab387; }
-.hljs-tag, .hljs-name { color: #f38ba8; }
-.hljs-selector-tag, .hljs-selector-class { color: #a6e3a1; }
-.hljs-meta, .hljs-meta-keyword { color: #89b4fa; }
-.hljs-symbol, .hljs-bullet { color: #f2cdcd; }
-.hljs-addition { color: #a6e3a1; background: rgba(166,227,161,.08); }
-.hljs-deletion { color: #f38ba8; background: rgba(243,139,168,.08); }
+.editor-content .hljs-keyword { color: #cba6f7; }
+.editor-content .hljs-string { color: #a6e3a1; }
+.editor-content .hljs-number, .editor-content .hljs-literal { color: #fab387; }
+.editor-content .hljs-comment, .editor-content .hljs-quote { color: #6c7086; font-style: italic; }
+.editor-content .hljs-function, .editor-content .hljs-title { color: #89b4fa; }
+.editor-content .hljs-built_in { color: #f9e2af; }
+.editor-content .hljs-variable, .editor-content .hljs-template-variable { color: #f38ba8; }
+.editor-content .hljs-type, .editor-content .hljs-class { color: #f9e2af; }
+.editor-content .hljs-attr, .editor-content .hljs-attribute { color: #fab387; }
+.editor-content .hljs-tag, .editor-content .hljs-name { color: #f38ba8; }
+.editor-content .hljs-selector-tag, .editor-content .hljs-selector-class { color: #a6e3a1; }
+.editor-content .hljs-meta, .editor-content .hljs-meta-keyword { color: #89b4fa; }
+.editor-content .hljs-symbol, .editor-content .hljs-bullet { color: #f2cdcd; }
+.editor-content .hljs-addition { color: #a6e3a1; background: rgba(166,227,161,.08); }
+.editor-content .hljs-deletion { color: #f38ba8; background: rgba(243,139,168,.08); }
+.editor-content .hljs-params { color: #cdd6f4; }
+.editor-content .hljs-operator { color: #89dceb; }
+.editor-content .hljs-property { color: #89b4fa; }
 
 /* ── Syntax highlighting (light) ─────────────────────────────────────────── */
-[data-theme='light'] .hljs-keyword { color: #8959a8; }
-[data-theme='light'] .hljs-string { color: #50a14f; }
-[data-theme='light'] .hljs-number, [data-theme='light'] .hljs-literal { color: #986801; }
-[data-theme='light'] .hljs-comment, [data-theme='light'] .hljs-quote { color: #a0a1a7; font-style: italic; }
-[data-theme='light'] .hljs-function, [data-theme='light'] .hljs-title { color: #4078f2; }
-[data-theme='light'] .hljs-built_in { color: #c18401; }
-[data-theme='light'] .hljs-variable { color: #e45649; }
-[data-theme='light'] .hljs-type { color: #c18401; }
-[data-theme='light'] .hljs-attr { color: #986801; }
-[data-theme='light'] .hljs-tag, [data-theme='light'] .hljs-name { color: #e45649; }
-[data-theme='light'] .hljs-meta { color: #4078f2; }
+[data-theme='light'] .editor-content .hljs-keyword { color: #8959a8; }
+[data-theme='light'] .editor-content .hljs-string { color: #50a14f; }
+[data-theme='light'] .editor-content .hljs-number, [data-theme='light'] .editor-content .hljs-literal { color: #986801; }
+[data-theme='light'] .editor-content .hljs-comment, [data-theme='light'] .editor-content .hljs-quote { color: #a0a1a7; font-style: italic; }
+[data-theme='light'] .editor-content .hljs-function, [data-theme='light'] .editor-content .hljs-title { color: #4078f2; }
+[data-theme='light'] .editor-content .hljs-built_in { color: #c18401; }
+[data-theme='light'] .editor-content .hljs-variable { color: #e45649; }
+[data-theme='light'] .editor-content .hljs-type { color: #c18401; }
+[data-theme='light'] .editor-content .hljs-attr { color: #986801; }
+[data-theme='light'] .editor-content .hljs-tag, [data-theme='light'] .editor-content .hljs-name { color: #e45649; }
+[data-theme='light'] .editor-content .hljs-meta { color: #4078f2; }
+[data-theme='light'] .editor-content .hljs-params { color: #383a42; }
+[data-theme='light'] .editor-content .hljs-operator { color: #0184bc; }
+[data-theme='light'] .editor-content .hljs-property { color: #4078f2; }
 
 /* placeholder */
 .tiptap p.is-editor-empty:first-child::before {
@@ -669,11 +675,42 @@ html, body {
 /* ── Electron: force default cursor everywhere ───────────────────────────── */
 .electron-mode,
 .electron-mode *,
+.electron-mode *::before,
+.electron-mode *::after,
 .electron-mode .tiptap,
 .electron-mode .ProseMirror,
 .electron-mode .editor-content,
 .electron-mode button,
 .electron-mode input,
+.electron-mode input[type='range'],
+.electron-mode input[type='range']::-webkit-slider-thumb,
 .electron-mode a {
   cursor: default !important;
+}
+
+/* ── Shortcut info badges (exe header) ───────────────────────────────────── */
+.shortcuts-info {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.shortcut-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: 'Inter', sans-serif;
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-3);
+  user-select: none;
+  letter-spacing: .03em;
+}
+.shortcut-tag::before {
+  content: '⌃';
+  margin-right: 1px;
+  font-size: 8px;
 }

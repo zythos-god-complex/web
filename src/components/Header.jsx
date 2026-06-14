@@ -46,6 +46,15 @@ export default function Header({
 
       {/* ── Right: status + actions ──────────────────────────── */}
       <div className="header-right">
+        {/* Exe-only: shortcuts info */}
+        {isElectron && (
+          <div className="shortcuts-info">
+            <span className="shortcut-tag" title="Close app">Q</span>
+            <span className="shortcut-tag" title="Hide/Show">H</span>
+            <span className="shortcut-tag" title="Click-through toggle">D</span>
+          </div>
+        )}
+
         {/* Web-only controls */}
         {!isElectron && (
           <>
