@@ -1,12 +1,13 @@
 import {
   Sun, Moon, Plus, Minus, Wifi, WifiOff,
-  ChevronUp, MousePointer2, Monitor,
+  ChevronUp, MousePointer2, Monitor, Maximize2,
 } from 'lucide-react';
 
 export default function Header({
   theme, toggleTheme, fontSize, increaseFontSize, decreaseFontSize,
   connected, onlineCount, desktopOnline, isElectron,
   opacity, onOpacityChange, clickThrough, toggleClickThrough, toggleControls,
+  resizeOn, toggleResize,
 }) {
   return (
     <header className={`header${isElectron ? ' draggable' : ''}`}>
@@ -42,6 +43,17 @@ export default function Header({
             />
           </div>
         )}
+
+        {/* Resize toggle — exe only */}
+        {isElectron && (
+          <button
+            onClick={toggleResize}
+            className={`ctrl-btn resize-btn ${resizeOn ? 'active' : ''}`}
+            title={resizeOn ? 'Resize ON — click to lock size' : 'Resize OFF — click to enable'}
+          >
+            <Maximize2 size={13} />
+          </button>
+        )}
       </div>
 
       {/* ── Right: status + actions ──────────────────────────── */}
@@ -49,29 +61,26 @@ export default function Header({
         {/* Exe-only: shortcuts info */}
         {isElectron && (
           <div className="shortcuts-info">
-            <span className="shortcut-tag" title="Close app">Q</span>
-            <span className="shortcut-tag" title="Hide/Show">H</span>
-            <span className="shortcut-tag" title="Click-through toggle">D</span>
+            <span className="shortcut-tag" title="Close app">Ctrl+Q</span>
+            <span className="shortcut-tag" title="Hide / Show">Ctrl+H</span>
+            <span className="shortcut-tag" title="Click-through toggle">Ctrl+D</span>
           </div>
         )}
 
         {/* Web-only controls */}
         {!isElectron && (
           <>
-            {/* Connection pill */}
             <div className={`conn-pill ${connected ? 'on' : 'off'}`}>
               {connected ? <Wifi size={12} /> : <WifiOff size={12} />}
               <span>{connected ? 'Live' : 'Offline'}</span>
               {connected && <span className="conn-count">{onlineCount}</span>}
             </div>
 
-            {/* Desktop status */}
             <div className={`desk-status ${desktopOnline ? 'on' : 'off'}`} title={desktopOnline ? 'Desktop app is online' : 'Desktop app is offline'}>
               <Monitor size={13} />
               <span>{desktopOnline ? 'ON' : 'OFF'}</span>
             </div>
 
-            {/* Click-through control for exe */}
             <button
               onClick={toggleClickThrough}
               className={`ct-btn ${clickThrough ? 'active' : ''}`}
@@ -83,7 +92,6 @@ export default function Header({
           </>
         )}
 
-        {/* Exe click-through indicator */}
         {isElectron && clickThrough && (
           <div className="ct-badge">
             <span className="ct-dot-blink" />
@@ -91,12 +99,10 @@ export default function Header({
           </div>
         )}
 
-        {/* Theme toggle */}
         <button onClick={toggleTheme} className="ctrl-btn theme-btn" title="Toggle theme">
           {theme === 'light' ? <Moon size={15} /> : <Sun size={15} />}
         </button>
 
-        {/* Collapse controls */}
         <button onClick={toggleControls} className="ctrl-btn" title="Hide controls">
           <ChevronUp size={15} />
         </button>

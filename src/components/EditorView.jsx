@@ -9,6 +9,7 @@ import Highlight from '@tiptap/extension-highlight';
 import Placeholder from '@tiptap/extension-placeholder';
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
 import { common, createLowlight } from 'lowlight';
+import CommentHighlight from '../extensions/CommentHighlight';
 import Toolbar from './Toolbar';
 import Header from './Header';
 import { getColorForUser } from '../utils/colors';
@@ -23,16 +24,24 @@ export default function EditorView({
   const [controlsVisible, setControlsVisible] = useState(true);
   const [opacity, setOpacity] = useState(1);
   const [clickThrough, setClickThrough] = useState(false);
+  const [resizeOn, setResizeOn] = useState(false);
 
-  // Guard: timestamp of last local Ctrl+D toggle to prevent echo loops
   const lastLocalToggle = useRef(0);
-
   const userColor = getColorForUser(user.name);
+
+  // Make html/body transparent in electron
+  useEffect(() => {
+    if (isElectron) {
+      document.documentElement.style.background = 'transparent';
+      document.body.style.background = 'transparent';
+    }
+  }, [isElectron]);
 
   const editor = useEditor({
     extensions: [
       StarterKit.configure({ history: false, codeBlock: false }),
       CodeBlockLowlight.configure({ lowlight }),
+      CommentHighlight,
       Underline,
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       Highlight.configure({ multicolor: true }),
@@ -51,15 +60,11 @@ export default function EditorView({
   // ─── Y.js shared controls map ────────────────────────────────────────────
   const controlsMap = useMemo(() => ydoc.getMap('controls'), [ydoc]);
 
-  // ─── Observe map changes (web → exe direction) ───────────────────────────
   useEffect(() => {
     const handler = () => {
-      // Skip if this change echoed from our own Ctrl+D within 300ms
       if (Date.now() - lastLocalToggle.current < 300) return;
-
       const ct = controlsMap.get('clickThrough') ?? false;
       setClickThrough(ct);
-
       if (isElectron && window.electronAPI) {
         window.electronAPI.setClickThrough(ct);
       }
@@ -68,26 +73,32 @@ export default function EditorView({
     return () => controlsMap.unobserve(handler);
   }, [controlsMap, isElectron]);
 
-  // ─── Exe: listen for Ctrl+D from main process ────────────────────────────
   useEffect(() => {
     if (!isElectron || !window.electronAPI?.onClickThroughChanged) return;
-
     const cleanup = window.electronAPI.onClickThroughChanged((enabled) => {
       lastLocalToggle.current = Date.now();
       setClickThrough(enabled);
       controlsMap.set('clickThrough', enabled);
     });
-
-    return cleanup; // removes listener on unmount
+    return cleanup;
   }, [controlsMap, isElectron]);
 
-  // ─── Opacity (exe only, local) ───────────────────────────────────────────
+  // ─── Opacity (exe only — CSS variable, text stays visible) ───────────────
   const handleOpacityChange = useCallback((val) => {
     setOpacity(val);
-    if (isElectron && window.electronAPI) window.electronAPI.setOpacity(val);
-  }, [isElectron]);
+    document.documentElement.style.setProperty('--app-alpha', val.toString());
+  }, []);
 
-  // ─── Web user toggles click-through for exe ──────────────────────────────
+  // ─── Resize toggle (exe only) ────────────────────────────────────────────
+  const toggleResize = useCallback(() => {
+    const next = !resizeOn;
+    setResizeOn(next);
+    if (isElectron && window.electronAPI) {
+      window.electronAPI.setResizable(next);
+    }
+  }, [resizeOn, isElectron]);
+
+  // ─── Web toggles click-through for exe ────────────────────────────────────
   const toggleClickThrough = useCallback(() => {
     const current = controlsMap.get('clickThrough') ?? false;
     controlsMap.set('clickThrough', !current);
@@ -114,6 +125,8 @@ export default function EditorView({
             clickThrough={clickThrough}
             toggleClickThrough={toggleClickThrough}
             toggleControls={toggleControls}
+            resizeOn={resizeOn}
+            toggleResize={toggleResize}
           />
           <Toolbar editor={editor} />
         </>
@@ -131,7 +144,6 @@ export default function EditorView({
         </div>
       </div>
 
-      {/* Click-through floating indicator (exe only) */}
       {isElectron && clickThrough && (
         <div className="ct-floating">
           <span className="ct-pulse" />
