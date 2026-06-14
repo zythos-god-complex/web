@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Collaboration from '@tiptap/extension-collaboration';
@@ -20,6 +20,9 @@ export default function EditorView({
   const [opacity, setOpacity] = useState(1);
   const [clickThrough, setClickThrough] = useState(false);
 
+  // Guard: timestamp of last local Ctrl+D toggle to prevent echo loops
+  const lastLocalToggle = useRef(0);
+
   const userColor = getColorForUser(user.name);
 
   const editor = useEditor({
@@ -40,32 +43,37 @@ export default function EditorView({
     },
   });
 
-  // ─── Y.js shared controls map (web ↔ exe sync) ───────────────────────────
-  const controlsMap = ydoc.getMap('controls');
+  // ─── Y.js shared controls map ────────────────────────────────────────────
+  const controlsMap = useMemo(() => ydoc.getMap('controls'), [ydoc]);
 
-  // Observe click-through changes from the shared map
+  // ─── Observe map changes (web → exe direction) ───────────────────────────
   useEffect(() => {
     const handler = () => {
+      // Skip if this change echoed from our own Ctrl+D within 300ms
+      if (Date.now() - lastLocalToggle.current < 300) return;
+
       const ct = controlsMap.get('clickThrough') ?? false;
       setClickThrough(ct);
-      // If we're in Electron, apply the change natively
+
       if (isElectron && window.electronAPI) {
         window.electronAPI.setClickThrough(ct);
       }
     };
     controlsMap.observe(handler);
-    handler();
     return () => controlsMap.unobserve(handler);
   }, [controlsMap, isElectron]);
 
-  // Exe: listen for Ctrl+D toggle from main process
+  // ─── Exe: listen for Ctrl+D from main process ────────────────────────────
   useEffect(() => {
     if (!isElectron || !window.electronAPI?.onClickThroughChanged) return;
-    window.electronAPI.onClickThroughChanged((enabled) => {
+
+    const cleanup = window.electronAPI.onClickThroughChanged((enabled) => {
+      lastLocalToggle.current = Date.now();
       setClickThrough(enabled);
-      // Sync back to shared map so web users see the state
       controlsMap.set('clickThrough', enabled);
     });
+
+    return cleanup; // removes listener on unmount
   }, [controlsMap, isElectron]);
 
   // ─── Opacity (exe only, local) ───────────────────────────────────────────
@@ -76,7 +84,8 @@ export default function EditorView({
 
   // ─── Web user toggles click-through for exe ──────────────────────────────
   const toggleClickThrough = useCallback(() => {
-    controlsMap.set('clickThrough', !controlsMap.get('clickThrough'));
+    const current = controlsMap.get('clickThrough') ?? false;
+    controlsMap.set('clickThrough', !current);
   }, [controlsMap]);
 
   const toggleControls = useCallback(() => setControlsVisible((v) => !v), []);
@@ -106,7 +115,7 @@ export default function EditorView({
       )}
 
       {!controlsVisible && (
-        <button className="expand-btn" onClick={toggleControls} title="Show controls (toolbar)">
+        <button className="expand-btn" onClick={toggleControls} title="Show controls">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
         </button>
       )}
