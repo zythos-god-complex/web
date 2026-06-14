@@ -340,12 +340,10 @@ html, body {
   overflow-y: auto;
   overflow-x: hidden;
   padding: 28px 20px 60px;
-  display: flex;
-  justify-content: center;
 }
 .web-mode .document-page {
-  width: 100%;
   max-width: 780px;
+  margin: 0 auto;
   min-height: calc(100vh - 160px);
   background: var(--bg-page);
   box-shadow: var(--page-shadow);
@@ -432,15 +430,20 @@ html, body {
   color: var(--accent);
 }
 .editor-content pre {
-  background: var(--bg-input);
+  background: #1e1e2e;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
-  padding: 12px 16px;
+  padding: 14px 18px;
   overflow-x: auto;
   margin: .6em 0;
+  color: #cdd6f4;
+}
+[data-theme='light'] .editor-content pre {
+  background: #fafafa;
+  color: #383a42;
 }
 .editor-content pre code {
-  background: transparent; border: none; padding: 0;
+  background: transparent; border: none; padding: 0; color: inherit;
   font-size: .88em; color: var(--text-1);
 }
 
@@ -458,6 +461,36 @@ html, body {
 
 .editor-content strong { font-weight: 700; }
 .editor-content u { text-decoration-thickness: 1.5px; text-underline-offset: 2px; }
+
+/* ── Syntax highlighting (dark — Catppuccin-inspired) ────────────────────── */
+.hljs-keyword { color: #cba6f7; }
+.hljs-string { color: #a6e3a1; }
+.hljs-number, .hljs-literal { color: #fab387; }
+.hljs-comment, .hljs-quote { color: #6c7086; font-style: italic; }
+.hljs-function, .hljs-title { color: #89b4fa; }
+.hljs-built_in { color: #f9e2af; }
+.hljs-variable, .hljs-template-variable { color: #f38ba8; }
+.hljs-type, .hljs-class { color: #f9e2af; }
+.hljs-attr, .hljs-attribute { color: #fab387; }
+.hljs-tag, .hljs-name { color: #f38ba8; }
+.hljs-selector-tag, .hljs-selector-class { color: #a6e3a1; }
+.hljs-meta, .hljs-meta-keyword { color: #89b4fa; }
+.hljs-symbol, .hljs-bullet { color: #f2cdcd; }
+.hljs-addition { color: #a6e3a1; background: rgba(166,227,161,.08); }
+.hljs-deletion { color: #f38ba8; background: rgba(243,139,168,.08); }
+
+/* ── Syntax highlighting (light) ─────────────────────────────────────────── */
+[data-theme='light'] .hljs-keyword { color: #8959a8; }
+[data-theme='light'] .hljs-string { color: #50a14f; }
+[data-theme='light'] .hljs-number, [data-theme='light'] .hljs-literal { color: #986801; }
+[data-theme='light'] .hljs-comment, [data-theme='light'] .hljs-quote { color: #a0a1a7; font-style: italic; }
+[data-theme='light'] .hljs-function, [data-theme='light'] .hljs-title { color: #4078f2; }
+[data-theme='light'] .hljs-built_in { color: #c18401; }
+[data-theme='light'] .hljs-variable { color: #e45649; }
+[data-theme='light'] .hljs-type { color: #c18401; }
+[data-theme='light'] .hljs-attr { color: #986801; }
+[data-theme='light'] .hljs-tag, [data-theme='light'] .hljs-name { color: #e45649; }
+[data-theme='light'] .hljs-meta { color: #4078f2; }
 
 /* placeholder */
 .tiptap p.is-editor-empty:first-child::before {
@@ -632,3 +665,15 @@ html, body {
 .theme-btn { transition: transform .3s cubic-bezier(.34,1.56,.64,1); }
 .theme-btn:hover { transform: rotate(15deg); }
 .theme-btn:active { transform: rotate(-15deg) scale(.9); }
+
+/* ── Electron: force default cursor everywhere ───────────────────────────── */
+.electron-mode,
+.electron-mode *,
+.electron-mode .tiptap,
+.electron-mode .ProseMirror,
+.electron-mode .editor-content,
+.electron-mode button,
+.electron-mode input,
+.electron-mode a {
+  cursor: default !important;
+}

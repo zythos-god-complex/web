@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@tiptap/extension-code-block-lowlight": "^2.27.2",
     "@tiptap/extension-collaboration": "^2.2.4",
     "@tiptap/extension-collaboration-cursor": "^2.2.4",
     "@tiptap/extension-highlight": "^2.2.4",
@@ -18,6 +19,7 @@
     "@tiptap/pm": "^2.2.4",
     "@tiptap/react": "^2.2.4",
     "@tiptap/starter-kit": "^2.2.4",
+    "lowlight": "^3.3.0",
     "lucide-react": "^0.309.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

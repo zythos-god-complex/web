@@ -7,9 +7,13 @@ import Underline from '@tiptap/extension-underline';
 import TextAlign from '@tiptap/extension-text-align';
 import Highlight from '@tiptap/extension-highlight';
 import Placeholder from '@tiptap/extension-placeholder';
+import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
+import { common, createLowlight } from 'lowlight';
 import Toolbar from './Toolbar';
 import Header from './Header';
 import { getColorForUser } from '../utils/colors';
+
+const lowlight = createLowlight(common);
 
 export default function EditorView({
   ydoc, provider, user, theme, toggleTheme,
@@ -27,7 +31,8 @@ export default function EditorView({
 
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({ history: false }),
+      StarterKit.configure({ history: false, codeBlock: false }),
+      CodeBlockLowlight.configure({ lowlight }),
       Underline,
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       Highlight.configure({ multicolor: true }),
