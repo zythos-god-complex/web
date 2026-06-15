@@ -171,6 +171,7 @@ export default function EditorView({
               onStop={tp.stop}
               status={tp.status}
               progress={tp.progress}
+              log={tp.log}
             />
           )}
         </>
