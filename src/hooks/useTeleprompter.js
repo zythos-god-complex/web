@@ -4,14 +4,11 @@ import {
 } from '../extensions/TeleprompterExtension';
 
 /**
- * LINE-BY-LINE teleprompter using Deepgram (Indian English).
+ * LINE-BY-LINE teleprompter — sequential word tracking.
  *
- * Flow:
- *  1. Highlight current line
- *  2. User reads aloud — spoken words are collected
- *  3. When enough words match the line (or we hear next-line words), line is "done"
- *  4. Done line is DELETED from the doc, everything shifts up
- *  5. Next line is highlighted
+ * Maintains a pointer that advances SEQUENTIALLY through each line's words.
+ * A line is only "done" when the pointer reaches the END of the line.
+ * This works correctly for any line length — short or 4-paragraphs-long.
  */
 export default function useTeleprompter(editor) {
   const [devices, setDevices] = useState([]);
@@ -23,7 +20,7 @@ export default function useTeleprompter(editor) {
 
   const isActiveRef = useRef(false);
   const linesRef = useRef([]);
-  const spokenWordsRef = useRef(new Set());
+  const linePointerRef = useRef(0); // which word in the current line we're at
   const wsRef = useRef(null);
   const recorderRef = useRef(null);
   const streamRef = useRef(null);
@@ -39,7 +36,7 @@ export default function useTeleprompter(editor) {
     });
   }, []);
 
-  // ─── Enumerate mics ────────────────────────────────────────────────────
+  // ─── Mic enumeration ───────────────────────────────────────────────────
   const refreshDevices = useCallback(async () => {
     addLog('Scanning mics...');
     try {
@@ -57,15 +54,17 @@ export default function useTeleprompter(editor) {
 
   useEffect(() => { refreshDevices(); }, []);
 
-  // ─── Re-extract lines & highlight first ─────────────────────────────────
+  // ─── Refresh lines & highlight first ────────────────────────────────────
   const reExtractAndHighlight = useCallback(() => {
     if (!editor || !editor.view) return;
     const lines = extractLines(editor.state.doc);
     linesRef.current = lines;
+    linePointerRef.current = 0; // reset word pointer for new line
+
     if (lines.length > 0) {
       setLineHighlight(editor.view, 0, lines);
       scrollToLine(editor.view, lines[0].from);
-      setProgress(`1/${lines.length}`);
+      setProgress(`Line 1 of ${lines.length}`);
     } else {
       clearHighlight(editor.view);
       setProgress('Done!');
@@ -73,53 +72,45 @@ export default function useTeleprompter(editor) {
     }
   }, [editor, addLog]);
 
-  // ─── Check if current line is "read" ────────────────────────────────────
-  const checkLineComplete = useCallback(() => {
+  // ─── Process a spoken word — sequential matching ────────────────────────
+  const processSpokenWord = useCallback((spokenNorm) => {
     const lines = linesRef.current;
     if (lines.length === 0) return;
 
-    const currentLine = lines[0]; // Always work on the first remaining line
-    const spoken = spokenWordsRef.current;
+    const currentLine = lines[0];
+    const lineWords = currentLine.words;
+    const ptr = linePointerRef.current;
 
-    // Count how many of the line's words were spoken
-    let matched = 0;
-    for (const w of currentLine.words) {
-      if (spoken.has(w)) matched++;
-    }
-    const total = currentLine.words.length;
-    const pct = total > 0 ? matched / total : 0;
+    // Try to match spoken word against the next few words in the line (lookahead 6)
+    const lookahead = Math.min(ptr + 6, lineWords.length);
+    let matched = false;
 
-    // Threshold: 40% for long lines, at least 1 word for short lines
-    const threshold = total <= 3 ? (1 / total) : 0.4;
-
-    // Also check: did user start saying words from the NEXT line?
-    let nextLineHit = false;
-    if (lines.length > 1) {
-      const nextLine = lines[1];
-      let nextMatched = 0;
-      for (const w of nextLine.words) {
-        if (spoken.has(w)) nextMatched++;
+    for (let i = ptr; i < lookahead; i++) {
+      if (isMatch(lineWords[i], spokenNorm)) {
+        linePointerRef.current = i + 1; // advance past the matched word
+        matched = true;
+        break;
       }
-      // If 2+ words from next line are spoken, current line is done
-      if (nextMatched >= 2) nextLineHit = true;
     }
 
-    if (pct >= threshold || nextLineHit) {
-      addLog(`✅ Line done (${matched}/${total} words matched${nextLineHit ? ' + next-line words' : ''})`);
-      addLog(`   "${currentLine.text.slice(0, 60)}${currentLine.text.length > 60 ? '…' : ''}"`);
+    // Check if we've reached the end of the line
+    const wordsLeft = lineWords.length - linePointerRef.current;
+    // Line is done when pointer is at/near the end (allow 1 word slack for very short lines, 2 for longer)
+    const slack = lineWords.length <= 4 ? 0 : 1;
+
+    if (wordsLeft <= slack) {
+      addLog(`✅ Line complete (${linePointerRef.current}/${lineWords.length} words tracked)`);
+      addLog(`   "${currentLine.text.slice(0, 80)}${currentLine.text.length > 80 ? '…' : ''}"`);
 
       // Delete this line from the document
       try {
         editor.chain().deleteRange({ from: currentLine.from, to: currentLine.to }).run();
       } catch (err) {
-        addLog(`Delete failed: ${err.message}`);
+        addLog(`Delete error: ${err.message}`);
       }
 
-      // Clear spoken words for next line
-      spokenWordsRef.current = new Set();
-
-      // Re-extract after deletion (positions changed)
-      setTimeout(() => reExtractAndHighlight(), 50);
+      // Re-extract after deletion
+      setTimeout(() => reExtractAndHighlight(), 80);
     }
   }, [editor, addLog, reExtractAndHighlight]);
 
@@ -140,8 +131,7 @@ export default function useTeleprompter(editor) {
         ? { audio: { deviceId: { exact: selectedDevice } } }
         : { audio: true };
       streamRef.current = await navigator.mediaDevices.getUserMedia(constraints);
-      const label = streamRef.current.getAudioTracks()[0]?.label || '?';
-      addLog(`Mic: ${label}`);
+      addLog(`Mic: ${streamRef.current.getAudioTracks()[0]?.label || '?'}`);
     } catch (err) {
       addLog(`Mic denied: ${err.message}`);
       setStatus('error');
@@ -150,7 +140,7 @@ export default function useTeleprompter(editor) {
 
     // Extract lines
     linesRef.current = extractLines(editor.state.doc);
-    spokenWordsRef.current = new Set();
+    linePointerRef.current = 0;
 
     if (linesRef.current.length === 0) {
       addLog('No text in document');
@@ -160,12 +150,10 @@ export default function useTeleprompter(editor) {
     }
 
     addLog(`${linesRef.current.length} lines to read`);
-
-    // Highlight first line
     setLineHighlight(editor.view, 0, linesRef.current);
     scrollToLine(editor.view, linesRef.current[0].from);
 
-    // Connect to Deepgram — Indian English
+    // Deepgram — Indian English, nova-2
     const dgUrl = 'wss://api.deepgram.com/v1/listen?model=nova-2&language=en-IN&interim_results=true&punctuate=false&smart_format=false&filler_words=false';
     addLog('Connecting to Deepgram (en-IN)...');
 
@@ -201,8 +189,8 @@ export default function useTeleprompter(editor) {
       isActiveRef.current = true;
       setIsActive(true);
       setStatus('listening');
-      setProgress(`1/${linesRef.current.length}`);
-      addLog('🎙 Speak now — reading line by line');
+      setProgress(`Line 1 of ${linesRef.current.length}`);
+      addLog('🎙 Speak now — read the highlighted line');
     };
 
     ws.onmessage = (event) => {
@@ -218,19 +206,17 @@ export default function useTeleprompter(editor) {
 
         addLog(`${isFinal ? '✓' : '…'} "${transcript}"`);
 
-        // Add each word to the spoken set
-        const words = transcript.split(/\s+/);
-        for (const w of words) {
-          const norm = w.toLowerCase().replace(/[^a-z0-9]/gi, '');
-          if (norm) spokenWordsRef.current.add(norm);
-        }
+        // Get individual words (Deepgram provides them, or split transcript)
+        const dgWords = alt.words
+          ? alt.words.map((w) => w.word)
+          : transcript.split(/\s+/);
 
-        // Check if the current line is complete
-        if (isFinal) {
-          checkLineComplete();
+        for (const w of dgWords) {
+          const norm = w.toLowerCase().replace(/[^a-z0-9]/gi, '');
+          if (norm) processSpokenWord(norm);
         }
       } catch (err) {
-        addLog(`Parse error: ${err.message}`);
+        addLog(`Parse: ${err.message}`);
       }
     };
 
@@ -239,7 +225,7 @@ export default function useTeleprompter(editor) {
       addLog(`WS closed (${e.code})`);
       if (isActiveRef.current) cleanupInternal();
     };
-  }, [editor, selectedDevice, addLog, checkLineComplete, reExtractAndHighlight]);
+  }, [editor, selectedDevice, addLog, processSpokenWord, reExtractAndHighlight]);
 
   // ─── Cleanup ────────────────────────────────────────────────────────────
   const cleanupInternal = useCallback(() => {
@@ -247,6 +233,7 @@ export default function useTeleprompter(editor) {
     setIsActive(false);
     setStatus('idle');
     setProgress('');
+    linePointerRef.current = 0;
 
     if (recorderRef.current) {
       try { if (recorderRef.current.state !== 'inactive') recorderRef.current.stop(); } catch (_) {}
@@ -276,4 +263,40 @@ export default function useTeleprompter(editor) {
   useEffect(() => () => { if (isActiveRef.current) cleanupInternal(); }, [cleanupInternal]);
 
   return { devices, selectedDevice, setSelectedDevice, isActive, status, progress, log, start, stop, refreshDevices };
+}
+
+// ─── Fuzzy word matching ──────────────────────────────────────────────────────
+
+function isMatch(docWord, spokenWord) {
+  if (!docWord || !spokenWord) return false;
+
+  // Exact match
+  if (docWord === spokenWord) return true;
+
+  // Prefix match (one is prefix of the other, min 3 chars)
+  if (spokenWord.length >= 3 && docWord.startsWith(spokenWord)) return true;
+  if (docWord.length >= 3 && spokenWord.startsWith(docWord)) return true;
+
+  // Edit distance 1 for words of length >= 4
+  if (docWord.length >= 4 && spokenWord.length >= 4) {
+    if (editDistance(docWord, spokenWord) <= 1) return true;
+  }
+
+  return false;
+}
+
+function editDistance(a, b) {
+  if (Math.abs(a.length - b.length) > 2) return 3; // quick reject
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
 }
