@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { extractWords, setHighlight, clearHighlight, scrollToWord } from '../extensions/TeleprompterExtension';
 
 /**
- * Custom hook — teleprompter with verbose logging
+ * Teleprompter hook using Deepgram real-time WebSocket speech-to-text
  */
 export default function useTeleprompter(editor) {
   const [devices, setDevices] = useState([]);
@@ -13,17 +13,23 @@ export default function useTeleprompter(editor) {
   const [log, setLog] = useState('');
 
   const isActiveRef = useRef(false);
-  const recognitionRef = useRef(null);
   const wordsRef = useRef([]);
   const currentIdxRef = useRef(0);
   const streamRef = useRef(null);
+  const recorderRef = useRef(null);
+  const wsRef = useRef(null);
 
-  // ─── Logging helper ──────────────────────────────────────────────────────
+  // ─── Logging ────────────────────────────────────────────────────────────
   const addLog = useCallback((msg) => {
     const ts = new Date().toLocaleTimeString();
     const line = `[${ts}] ${msg}`;
     console.log('[TP]', msg);
-    setLog((prev) => (prev ? prev + '\n' + line : line));
+    setLog((prev) => {
+      const lines = prev ? prev.split('\n') : [];
+      lines.push(line);
+      // Keep last 50 lines
+      return lines.slice(-50).join('\n');
+    });
   }, []);
 
   // ─── Enumerate microphones ──────────────────────────────────────────────
@@ -36,7 +42,7 @@ export default function useTeleprompter(editor) {
       const all = await navigator.mediaDevices.enumerateDevices();
       const mics = all.filter((d) => d.kind === 'audioinput');
       setDevices(mics);
-      addLog(`Found ${mics.length} mic(s): ${mics.map((m) => m.label || m.deviceId.slice(0, 8)).join(', ')}`);
+      addLog(`Found ${mics.length} mic(s)`);
       if (mics.length && !selectedDevice) setSelectedDevice(mics[0].deviceId);
     } catch (err) {
       addLog(`Mic enumeration FAILED: ${err.message}`);
@@ -45,39 +51,40 @@ export default function useTeleprompter(editor) {
 
   useEffect(() => { refreshDevices(); }, []);
 
-  // ─── Start teleprompter ─────────────────────────────────────────────────
+  // ─── Start ──────────────────────────────────────────────────────────────
   const start = useCallback(async () => {
     if (!editor || isActiveRef.current) return;
 
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    addLog(`SpeechRecognition API: ${SpeechRecognition ? 'AVAILABLE' : 'NOT FOUND'}`);
-    if (!SpeechRecognition) {
+    const apiKey = window.electronAPI?.deepgramKey;
+    if (!apiKey) {
+      addLog('ERROR: No Deepgram API key found in electronAPI');
       setStatus('error');
-      addLog('ERROR: No SpeechRecognition API in this browser/runtime');
       return;
     }
+    addLog('Deepgram API key found');
 
-    // Request selected mic
+    // ── Get mic stream ──────────────────────────────────────────────────
     try {
       const constraints = selectedDevice
         ? { audio: { deviceId: { exact: selectedDevice } } }
         : { audio: true };
-      addLog(`Requesting mic: ${selectedDevice ? selectedDevice.slice(0, 12) + '…' : 'default'}`);
+      addLog(`Requesting mic...`);
       streamRef.current = await navigator.mediaDevices.getUserMedia(constraints);
-      addLog(`Mic stream active: ${streamRef.current.active}, tracks: ${streamRef.current.getAudioTracks().length}`);
+      const trackLabel = streamRef.current.getAudioTracks()[0]?.label || 'unknown';
+      addLog(`Mic active: ${trackLabel}`);
     } catch (err) {
       addLog(`Mic access DENIED: ${err.message}`);
       setStatus('error');
       return;
     }
 
-    // Snapshot document words
+    // ── Snapshot document words ──────────────────────────────────────────
     wordsRef.current = extractWords(editor.state.doc);
     currentIdxRef.current = 0;
-    addLog(`Extracted ${wordsRef.current.length} words from document`);
+    addLog(`Extracted ${wordsRef.current.length} words`);
 
     if (wordsRef.current.length === 0) {
-      addLog('No words in document — nothing to track');
+      addLog('No words in document');
       setStatus('idle');
       return;
     }
@@ -86,117 +93,145 @@ export default function useTeleprompter(editor) {
     setHighlight(editor.view, 0, wordsRef.current);
     scrollToWord(editor.view, wordsRef.current[0].from);
 
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-    recognition.maxAlternatives = 1;
+    // ── Connect to Deepgram WebSocket ───────────────────────────────────
+    const dgUrl = `wss://api.deepgram.com/v1/listen?model=nova-2&interim_results=true&punctuate=false&language=en&encoding=linear16&sample_rate=16000&channels=1`;
 
-    addLog('SpeechRecognition instance created. Starting...');
+    addLog('Connecting to Deepgram...');
+    const ws = new WebSocket(dgUrl, ['token', apiKey]);
+    wsRef.current = ws;
 
-    recognition.onstart = () => {
-      addLog('✅ Recognition STARTED — speak now!');
+    ws.onopen = () => {
+      addLog('✅ Deepgram connected! Starting audio capture...');
+
+      // ── Set up audio processing (raw PCM via AudioContext) ──────────
+      const audioContext = new AudioContext({ sampleRate: 16000 });
+      const source = audioContext.createMediaStreamSource(streamRef.current);
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+      processor.onaudioprocess = (e) => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        const float32 = e.inputBuffer.getChannelData(0);
+        // Convert Float32 to Int16 (linear16)
+        const int16 = new Int16Array(float32.length);
+        for (let i = 0; i < float32.length; i++) {
+          const s = Math.max(-1, Math.min(1, float32[i]));
+          int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
+        ws.send(int16.buffer);
+      };
+
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+
+      // Store for cleanup
+      recorderRef.current = { audioContext, source, processor };
+
+      isActiveRef.current = true;
+      setIsActive(true);
+      setStatus('listening');
+      setProgress(`0/${wordsRef.current.length}`);
+      addLog('🎙 Listening — speak now!');
     };
 
-    recognition.onaudiostart = () => {
-      addLog('🎙 Audio capture started');
-    };
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'Results') {
+          const alt = data.channel?.alternatives?.[0];
+          if (!alt) return;
 
-    recognition.onsoundstart = () => {
-      addLog('🔊 Sound detected');
-    };
+          const transcript = alt.transcript?.trim();
+          const isFinal = data.is_final;
 
-    recognition.onspeechstart = () => {
-      addLog('🗣 Speech detected');
-    };
+          if (!transcript) return;
 
-    recognition.onspeechend = () => {
-      addLog('🔇 Speech ended');
-    };
+          addLog(`${isFinal ? '✓' : '…'} "${transcript}"`);
 
-    recognition.onresult = (event) => {
-      for (let r = event.resultIndex; r < event.results.length; r++) {
-        const transcript = event.results[r][0].transcript.trim();
-        const confidence = event.results[r][0].confidence;
-        const isFinal = event.results[r].isFinal;
+          // Process each word from Deepgram
+          const dgWords = alt.words || transcript.split(/\s+/).map((w) => ({ word: w }));
 
-        addLog(`${isFinal ? '✓ FINAL' : '… interim'}: "${transcript}" (conf: ${(confidence * 100).toFixed(0)}%)`);
+          for (const dw of dgWords) {
+            const spokenNorm = (dw.word || '').toLowerCase().replace(/[^a-z0-9]/gi, '');
+            if (!spokenNorm) continue;
 
-        if (!transcript) continue;
+            const matchIdx = findMatch(spokenNorm, wordsRef.current, currentIdxRef.current);
+            if (matchIdx >= 0) {
+              currentIdxRef.current = matchIdx + 1;
+              setHighlight(editor.view, matchIdx, wordsRef.current);
+              scrollToWord(editor.view, wordsRef.current[matchIdx].from);
 
-        const spokenWords = transcript.split(/\s+/);
-        for (const sw of spokenWords) {
-          const spokenNorm = sw.toLowerCase().replace(/[^a-z0-9]/gi, '');
-          if (!spokenNorm || spokenNorm.length < 1) continue;
+              const total = wordsRef.current.length;
+              setProgress(`${matchIdx + 1}/${total}`);
 
-          const matchIdx = findMatch(spokenNorm, wordsRef.current, currentIdxRef.current);
-          if (matchIdx >= 0) {
-            currentIdxRef.current = matchIdx + 1;
-            setHighlight(editor.view, matchIdx, wordsRef.current);
-            scrollToWord(editor.view, wordsRef.current[matchIdx].from);
-
-            const total = wordsRef.current.length;
-            setProgress(`${matchIdx + 1}/${total}`);
-            addLog(`→ Matched "${spokenNorm}" to word #${matchIdx}: "${wordsRef.current[matchIdx].raw}"`);
-
-            if (matchIdx + 1 >= total) setProgress('Done!');
+              if (matchIdx + 1 >= total) {
+                addLog('🎉 Done — reached end of document!');
+                setProgress('Done!');
+              }
+            }
           }
         }
+      } catch (err) {
+        addLog(`Parse error: ${err.message}`);
       }
     };
 
-    recognition.onend = () => {
-      addLog('Recognition ended');
-      if (isActiveRef.current) {
-        addLog('Auto-restarting...');
-        try { recognition.start(); } catch (e) { addLog(`Restart failed: ${e.message}`); }
-      }
-    };
-
-    recognition.onerror = (event) => {
-      addLog(`❌ ERROR: ${event.error} — ${event.message || 'no details'}`);
-      if (event.error === 'not-allowed') {
-        addLog('Mic permission was denied by the system');
-        setStatus('error');
-      }
-    };
-
-    try {
-      recognition.start();
-      addLog('recognition.start() called');
-    } catch (err) {
-      addLog(`Failed to start: ${err.message}`);
+    ws.onerror = (event) => {
+      addLog(`❌ WebSocket error`);
       setStatus('error');
-      return;
-    }
+    };
 
-    recognitionRef.current = recognition;
-    isActiveRef.current = true;
-    setIsActive(true);
-    setStatus('listening');
-    setProgress(`0/${wordsRef.current.length}`);
+    ws.onclose = (event) => {
+      addLog(`WebSocket closed (code: ${event.code})`);
+      if (isActiveRef.current) {
+        addLog('Connection lost — stopping');
+        cleanupInternal();
+      }
+    };
   }, [editor, selectedDevice, addLog]);
 
-  // ─── Stop ───────────────────────────────────────────────────────────────
-  const stop = useCallback(() => {
-    addLog('Stopping teleprompter');
+  // ─── Cleanup helper ─────────────────────────────────────────────────────
+  const cleanupInternal = useCallback(() => {
     isActiveRef.current = false;
     setIsActive(false);
     setStatus('idle');
     setProgress('');
 
-    if (recognitionRef.current) {
-      try { recognitionRef.current.abort(); } catch (_) {}
-      recognitionRef.current = null;
+    // Stop audio processing
+    if (recorderRef.current) {
+      try {
+        recorderRef.current.processor.disconnect();
+        recorderRef.current.source.disconnect();
+        recorderRef.current.audioContext.close();
+      } catch (_) {}
+      recorderRef.current = null;
     }
 
+    // Close WebSocket (send empty buffer to signal end)
+    if (wsRef.current) {
+      try {
+        if (wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(new ArrayBuffer(0));
+          wsRef.current.close();
+        }
+      } catch (_) {}
+      wsRef.current = null;
+    }
+
+    // Stop mic stream
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
 
+    // Clear decorations
     if (editor && editor.view) clearHighlight(editor.view);
-  }, [editor, addLog]);
+  }, [editor]);
+
+  // ─── Stop ───────────────────────────────────────────────────────────────
+  const stop = useCallback(() => {
+    addLog('Stopping teleprompter');
+    cleanupInternal();
+  }, [addLog, cleanupInternal]);
 
   // ─── Re-extract words on doc changes ────────────────────────────────────
   useEffect(() => {
@@ -216,7 +251,8 @@ export default function useTeleprompter(editor) {
     return () => editor.off('update', handler);
   }, [editor]);
 
-  useEffect(() => () => { if (isActiveRef.current) stop(); }, [stop]);
+  // Cleanup on unmount
+  useEffect(() => () => { if (isActiveRef.current) cleanupInternal(); }, [cleanupInternal]);
 
   return { devices, selectedDevice, setSelectedDevice, isActive, status, progress, log, start, stop, refreshDevices };
 }
@@ -224,16 +260,19 @@ export default function useTeleprompter(editor) {
 // ─── Word matching ──────────────────────────────────────────────────────────
 
 function findMatch(spokenNorm, docWords, startIndex) {
-  const end = Math.min(startIndex + 10, docWords.length);
+  const end = Math.min(startIndex + 12, docWords.length);
 
+  // Exact match
   for (let i = startIndex; i < end; i++) {
     if (docWords[i].normalized === spokenNorm) return i;
   }
+  // Prefix match (spoken is partial)
   if (spokenNorm.length >= 3) {
     for (let i = startIndex; i < end; i++) {
       if (docWords[i].normalized.startsWith(spokenNorm)) return i;
     }
   }
+  // Doc word is prefix of spoken
   for (let i = startIndex; i < end; i++) {
     if (docWords[i].normalized.length >= 2 && spokenNorm.startsWith(docWords[i].normalized)) return i;
   }
