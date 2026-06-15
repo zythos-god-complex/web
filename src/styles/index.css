@@ -892,21 +892,18 @@ html, body {
   user-select: none;
 }
 
-/* ── Word highlights (ProseMirror decorations) ───────────────────────────── */
-.tp-current {
-  background: rgba(34, 197, 94, .25);
-  border-radius: 2px;
-  box-shadow: 0 0 0 2px rgba(34, 197, 94, .3);
-  transition: background .15s ease, box-shadow .15s ease;
+/* ── Line highlight (current line being read) ────────────────────────────── */
+.tp-current-line {
+  background: rgba(34, 197, 94, .12) !important;
+  border-left: 3px solid #22c55e;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px rgba(34, 197, 94, .15);
+  transition: background .2s ease;
 }
-[data-theme='dark'] .tp-current {
-  background: rgba(74, 222, 128, .2);
-  box-shadow: 0 0 0 2px rgba(74, 222, 128, .25);
-}
-
-.tp-read {
-  opacity: .25;
-  transition: opacity .3s ease;
+[data-theme='dark'] .tp-current-line {
+  background: rgba(74, 222, 128, .08) !important;
+  border-left-color: #4ade80;
+  box-shadow: inset 0 0 0 1px rgba(74, 222, 128, .12);
 }
 
 /* ── Debug log ───────────────────────────────────────────────────────────── */

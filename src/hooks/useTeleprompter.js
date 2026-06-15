@@ -1,8 +1,17 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { extractWords, setHighlight, clearHighlight, scrollToWord } from '../extensions/TeleprompterExtension';
+import {
+  extractLines, setLineHighlight, clearHighlight, scrollToLine,
+} from '../extensions/TeleprompterExtension';
 
 /**
- * Teleprompter hook using Deepgram real-time WebSocket + MediaRecorder
+ * LINE-BY-LINE teleprompter using Deepgram (Indian English).
+ *
+ * Flow:
+ *  1. Highlight current line
+ *  2. User reads aloud — spoken words are collected
+ *  3. When enough words match the line (or we hear next-line words), line is "done"
+ *  4. Done line is DELETED from the doc, everything shifts up
+ *  5. Next line is highlighted
  */
 export default function useTeleprompter(editor) {
   const [devices, setDevices] = useState([]);
@@ -13,29 +22,29 @@ export default function useTeleprompter(editor) {
   const [log, setLog] = useState('');
 
   const isActiveRef = useRef(false);
-  const wordsRef = useRef([]);
-  const currentIdxRef = useRef(0);
-  const streamRef = useRef(null);
-  const recorderRef = useRef(null);
+  const linesRef = useRef([]);
+  const spokenWordsRef = useRef(new Set());
   const wsRef = useRef(null);
+  const recorderRef = useRef(null);
+  const streamRef = useRef(null);
 
   const addLog = useCallback((msg) => {
     const ts = new Date().toLocaleTimeString();
     const line = `[${ts}] ${msg}`;
     console.log('[TP]', msg);
     setLog((prev) => {
-      const lines = prev ? prev.split('\n') : [];
-      lines.push(line);
-      return lines.slice(-50).join('\n');
+      const arr = prev ? prev.split('\n') : [];
+      arr.push(line);
+      return arr.slice(-40).join('\n');
     });
   }, []);
 
   // ─── Enumerate mics ────────────────────────────────────────────────────
   const refreshDevices = useCallback(async () => {
-    addLog('Enumerating mics...');
+    addLog('Scanning mics...');
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((t) => t.stop());
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+      s.getTracks().forEach((t) => t.stop());
       const all = await navigator.mediaDevices.enumerateDevices();
       const mics = all.filter((d) => d.kind === 'audioinput');
       setDevices(mics);
@@ -48,6 +57,72 @@ export default function useTeleprompter(editor) {
 
   useEffect(() => { refreshDevices(); }, []);
 
+  // ─── Re-extract lines & highlight first ─────────────────────────────────
+  const reExtractAndHighlight = useCallback(() => {
+    if (!editor || !editor.view) return;
+    const lines = extractLines(editor.state.doc);
+    linesRef.current = lines;
+    if (lines.length > 0) {
+      setLineHighlight(editor.view, 0, lines);
+      scrollToLine(editor.view, lines[0].from);
+      setProgress(`1/${lines.length}`);
+    } else {
+      clearHighlight(editor.view);
+      setProgress('Done!');
+      addLog('🎉 All lines read!');
+    }
+  }, [editor, addLog]);
+
+  // ─── Check if current line is "read" ────────────────────────────────────
+  const checkLineComplete = useCallback(() => {
+    const lines = linesRef.current;
+    if (lines.length === 0) return;
+
+    const currentLine = lines[0]; // Always work on the first remaining line
+    const spoken = spokenWordsRef.current;
+
+    // Count how many of the line's words were spoken
+    let matched = 0;
+    for (const w of currentLine.words) {
+      if (spoken.has(w)) matched++;
+    }
+    const total = currentLine.words.length;
+    const pct = total > 0 ? matched / total : 0;
+
+    // Threshold: 40% for long lines, at least 1 word for short lines
+    const threshold = total <= 3 ? (1 / total) : 0.4;
+
+    // Also check: did user start saying words from the NEXT line?
+    let nextLineHit = false;
+    if (lines.length > 1) {
+      const nextLine = lines[1];
+      let nextMatched = 0;
+      for (const w of nextLine.words) {
+        if (spoken.has(w)) nextMatched++;
+      }
+      // If 2+ words from next line are spoken, current line is done
+      if (nextMatched >= 2) nextLineHit = true;
+    }
+
+    if (pct >= threshold || nextLineHit) {
+      addLog(`✅ Line done (${matched}/${total} words matched${nextLineHit ? ' + next-line words' : ''})`);
+      addLog(`   "${currentLine.text.slice(0, 60)}${currentLine.text.length > 60 ? '…' : ''}"`);
+
+      // Delete this line from the document
+      try {
+        editor.chain().deleteRange({ from: currentLine.from, to: currentLine.to }).run();
+      } catch (err) {
+        addLog(`Delete failed: ${err.message}`);
+      }
+
+      // Clear spoken words for next line
+      spokenWordsRef.current = new Set();
+
+      // Re-extract after deletion (positions changed)
+      setTimeout(() => reExtractAndHighlight(), 50);
+    }
+  }, [editor, addLog, reExtractAndHighlight]);
+
   // ─── Start ──────────────────────────────────────────────────────────────
   const start = useCallback(async () => {
     if (!editor || isActiveRef.current) return;
@@ -59,45 +134,46 @@ export default function useTeleprompter(editor) {
       return;
     }
 
-    // Get mic stream
+    // Get mic
     try {
       const constraints = selectedDevice
         ? { audio: { deviceId: { exact: selectedDevice } } }
         : { audio: true };
-      addLog('Requesting mic...');
       streamRef.current = await navigator.mediaDevices.getUserMedia(constraints);
-      const label = streamRef.current.getAudioTracks()[0]?.label || 'unknown';
+      const label = streamRef.current.getAudioTracks()[0]?.label || '?';
       addLog(`Mic: ${label}`);
     } catch (err) {
-      addLog(`Mic DENIED: ${err.message}`);
+      addLog(`Mic denied: ${err.message}`);
       setStatus('error');
       return;
     }
 
-    // Extract words
-    wordsRef.current = extractWords(editor.state.doc);
-    currentIdxRef.current = 0;
-    addLog(`${wordsRef.current.length} words in document`);
+    // Extract lines
+    linesRef.current = extractLines(editor.state.doc);
+    spokenWordsRef.current = new Set();
 
-    if (wordsRef.current.length === 0) {
-      addLog('No words — nothing to track');
+    if (linesRef.current.length === 0) {
+      addLog('No text in document');
       setStatus('idle');
       streamRef.current.getTracks().forEach((t) => t.stop());
       return;
     }
 
-    setHighlight(editor.view, 0, wordsRef.current);
-    scrollToWord(editor.view, wordsRef.current[0].from);
+    addLog(`${linesRef.current.length} lines to read`);
 
-    // Connect to Deepgram (no encoding params — Deepgram auto-detects webm/opus)
-    const dgUrl = `wss://api.deepgram.com/v1/listen?model=nova-2&interim_results=true&punctuate=false&language=en`;
-    addLog('Connecting to Deepgram...');
+    // Highlight first line
+    setLineHighlight(editor.view, 0, linesRef.current);
+    scrollToLine(editor.view, linesRef.current[0].from);
+
+    // Connect to Deepgram — Indian English
+    const dgUrl = 'wss://api.deepgram.com/v1/listen?model=nova-2&language=en-IN&interim_results=true&punctuate=false&smart_format=false&filler_words=false';
+    addLog('Connecting to Deepgram (en-IN)...');
 
     let ws;
     try {
       ws = new WebSocket(dgUrl, ['token', apiKey]);
     } catch (err) {
-      addLog(`WebSocket create failed: ${err.message}`);
+      addLog(`WS failed: ${err.message}`);
       setStatus('error');
       return;
     }
@@ -106,26 +182,18 @@ export default function useTeleprompter(editor) {
     ws.onopen = () => {
       addLog('✅ Deepgram connected');
 
-      // Use MediaRecorder (safe, no AudioContext crashes)
       let mimeType = 'audio/webm;codecs=opus';
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        mimeType = 'audio/webm';
-        addLog(`Using fallback mime: ${mimeType}`);
-      }
+      if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'audio/webm';
 
       try {
         const recorder = new MediaRecorder(streamRef.current, { mimeType });
-        recorder.ondataavailable = (event) => {
-          if (event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
-            ws.send(event.data);
-          }
+        recorder.ondataavailable = (e) => {
+          if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) ws.send(e.data);
         };
-        recorder.onerror = (e) => addLog(`Recorder error: ${e.error?.message || 'unknown'}`);
-        recorder.start(250); // Send audio every 250ms
+        recorder.start(250);
         recorderRef.current = recorder;
-        addLog('🎙 Listening — speak now!');
       } catch (err) {
-        addLog(`Recorder failed: ${err.message}`);
+        addLog(`Recorder error: ${err.message}`);
         setStatus('error');
         return;
       }
@@ -133,7 +201,8 @@ export default function useTeleprompter(editor) {
       isActiveRef.current = true;
       setIsActive(true);
       setStatus('listening');
-      setProgress(`0/${wordsRef.current.length}`);
+      setProgress(`1/${linesRef.current.length}`);
+      addLog('🎙 Speak now — reading line by line');
     };
 
     ws.onmessage = (event) => {
@@ -146,42 +215,31 @@ export default function useTeleprompter(editor) {
 
         const transcript = alt.transcript.trim();
         const isFinal = data.is_final;
+
         addLog(`${isFinal ? '✓' : '…'} "${transcript}"`);
 
-        const dgWords = alt.words || transcript.split(/\s+/).map((w) => ({ word: w }));
+        // Add each word to the spoken set
+        const words = transcript.split(/\s+/);
+        for (const w of words) {
+          const norm = w.toLowerCase().replace(/[^a-z0-9]/gi, '');
+          if (norm) spokenWordsRef.current.add(norm);
+        }
 
-        for (const dw of dgWords) {
-          const spokenNorm = (dw.word || '').toLowerCase().replace(/[^a-z0-9]/gi, '');
-          if (!spokenNorm) continue;
-
-          const matchIdx = findMatch(spokenNorm, wordsRef.current, currentIdxRef.current);
-          if (matchIdx >= 0) {
-            currentIdxRef.current = matchIdx + 1;
-            setHighlight(editor.view, matchIdx, wordsRef.current);
-            scrollToWord(editor.view, wordsRef.current[matchIdx].from);
-            setProgress(`${matchIdx + 1}/${wordsRef.current.length}`);
-
-            if (matchIdx + 1 >= wordsRef.current.length) {
-              addLog('🎉 Done!');
-              setProgress('Done!');
-            }
-          }
+        // Check if the current line is complete
+        if (isFinal) {
+          checkLineComplete();
         }
       } catch (err) {
         addLog(`Parse error: ${err.message}`);
       }
     };
 
-    ws.onerror = () => {
-      addLog('❌ WebSocket error');
-      setStatus('error');
-    };
-
-    ws.onclose = (event) => {
-      addLog(`WS closed (${event.code})`);
+    ws.onerror = () => { addLog('❌ WS error'); setStatus('error'); };
+    ws.onclose = (e) => {
+      addLog(`WS closed (${e.code})`);
       if (isActiveRef.current) cleanupInternal();
     };
-  }, [editor, selectedDevice, addLog]);
+  }, [editor, selectedDevice, addLog, checkLineComplete, reExtractAndHighlight]);
 
   // ─── Cleanup ────────────────────────────────────────────────────────────
   const cleanupInternal = useCallback(() => {
@@ -211,45 +269,11 @@ export default function useTeleprompter(editor) {
   }, [editor]);
 
   const stop = useCallback(() => {
-    addLog('Stopping');
+    addLog('Stopped');
     cleanupInternal();
   }, [addLog, cleanupInternal]);
-
-  // Re-extract words on doc changes
-  useEffect(() => {
-    if (!editor || !isActiveRef.current) return;
-    const handler = () => {
-      const newWords = extractWords(editor.state.doc);
-      if (currentIdxRef.current > 0 && currentIdxRef.current <= wordsRef.current.length) {
-        const lastWord = wordsRef.current[currentIdxRef.current - 1];
-        if (lastWord) {
-          const found = newWords.findIndex((w) => w.normalized === lastWord.normalized && Math.abs(w.from - lastWord.from) < 20);
-          if (found >= 0) currentIdxRef.current = found + 1;
-        }
-      }
-      wordsRef.current = newWords;
-    };
-    editor.on('update', handler);
-    return () => editor.off('update', handler);
-  }, [editor]);
 
   useEffect(() => () => { if (isActiveRef.current) cleanupInternal(); }, [cleanupInternal]);
 
   return { devices, selectedDevice, setSelectedDevice, isActive, status, progress, log, start, stop, refreshDevices };
-}
-
-function findMatch(spokenNorm, docWords, startIndex) {
-  const end = Math.min(startIndex + 12, docWords.length);
-  for (let i = startIndex; i < end; i++) {
-    if (docWords[i].normalized === spokenNorm) return i;
-  }
-  if (spokenNorm.length >= 3) {
-    for (let i = startIndex; i < end; i++) {
-      if (docWords[i].normalized.startsWith(spokenNorm)) return i;
-    }
-  }
-  for (let i = startIndex; i < end; i++) {
-    if (docWords[i].normalized.length >= 2 && spokenNorm.startsWith(docWords[i].normalized)) return i;
-  }
-  return -1;
 }

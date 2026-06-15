@@ -5,9 +5,8 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view';
 export const teleprompterKey = new PluginKey('teleprompter');
 
 /**
- * Tiptap extension that manages teleprompter word highlighting via ProseMirror decorations.
- * - .tp-current  → green glow on the word being spoken
- * - .tp-read     → dimmed text for already-read words
+ * Line-based teleprompter highlighting.
+ * Highlights the entire current line/paragraph the user is reading.
  */
 export const TeleprompterExtension = Extension.create({
   name: 'teleprompter',
@@ -36,52 +35,46 @@ export const TeleprompterExtension = Extension.create({
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Extract every word from the document with its position */
-export function extractWords(doc) {
-  const words = [];
-  doc.descendants((node, pos) => {
-    if (node.isText && node.text) {
-      const regex = /[^\s]+/g;
-      let match;
-      while ((match = regex.exec(node.text)) !== null) {
-        const raw = match[0];
-        const normalized = raw.toLowerCase().replace(/[^a-z0-9]/gi, '');
-        if (normalized.length > 0) {
-          words.push({ raw, normalized, from: pos + match.index, to: pos + match.index + raw.length });
-        }
-      }
-    }
+/** Extract lines (paragraphs/blocks) with their text and word lists */
+export function extractLines(doc) {
+  const lines = [];
+  doc.forEach((node, offset) => {
+    const text = node.textContent.trim();
+    if (!text) return; // skip empty lines
+    const words = text
+      .split(/\s+/)
+      .map((w) => w.toLowerCase().replace(/[^a-z0-9]/gi, ''))
+      .filter((w) => w.length > 0);
+    if (words.length === 0) return;
+    lines.push({
+      from: offset,
+      to: offset + node.nodeSize,
+      text,
+      words,
+      wordSet: new Set(words),
+    });
   });
-  return words;
+  return lines;
 }
 
-/** Update decorations: highlight current word + dim read words */
-export function setHighlight(view, currentIdx, allWords) {
+/** Highlight a specific line with a node decoration */
+export function setLineHighlight(view, lineIdx, lines) {
   if (!view || view.isDestroyed) return;
   const { state } = view;
   const decorations = [];
 
-  // Dim already-read words
-  for (let i = 0; i < currentIdx; i++) {
-    const w = allWords[i];
-    if (w && w.from < state.doc.content.size && w.to <= state.doc.content.size) {
-      decorations.push(Decoration.inline(w.from, w.to, { class: 'tp-read' }));
-    }
-  }
-
-  // Highlight current word
-  const cur = allWords[currentIdx];
-  if (cur && cur.from < state.doc.content.size && cur.to <= state.doc.content.size) {
-    decorations.push(Decoration.inline(cur.from, cur.to, { class: 'tp-current' }));
+  const line = lines[lineIdx];
+  if (line && line.from < state.doc.content.size && line.to <= state.doc.content.size) {
+    decorations.push(Decoration.node(line.from, line.to, { class: 'tp-current-line' }));
   }
 
   try {
     const decoSet = DecorationSet.create(state.doc, decorations);
     view.dispatch(state.tr.setMeta(teleprompterKey, decoSet));
-  } catch (_) { /* ignore position errors during concurrent edits */ }
+  } catch (_) {}
 }
 
-/** Clear all teleprompter decorations */
+/** Clear all decorations */
 export function clearHighlight(view) {
   if (!view || view.isDestroyed) return;
   try {
@@ -89,17 +82,19 @@ export function clearHighlight(view) {
   } catch (_) {}
 }
 
-/** Scroll the document container so the current word is visible */
-export function scrollToWord(view, pos) {
+/** Scroll so the line is visible */
+export function scrollToLine(view, from) {
   if (!view || view.isDestroyed) return;
   try {
-    const coords = view.coordsAtPos(pos);
+    const coords = view.coordsAtPos(from + 1);
     const container = document.querySelector('.document-container');
     if (!container || !coords) return;
     const rect = container.getBoundingClientRect();
-    // Keep the word in the top 1/3
-    if (coords.top < rect.top + 40 || coords.top > rect.top + rect.height * 0.6) {
-      container.scrollTo({ top: container.scrollTop + (coords.top - rect.top - rect.height * 0.3), behavior: 'smooth' });
+    if (coords.top < rect.top + 30 || coords.top > rect.top + rect.height * 0.5) {
+      container.scrollTo({
+        top: container.scrollTop + (coords.top - rect.top - 60),
+        behavior: 'smooth',
+      });
     }
   } catch (_) {}
 }
