@@ -1,13 +1,13 @@
 import {
   Sun, Moon, Plus, Minus, Wifi, WifiOff,
-  ChevronUp, MousePointer2, Monitor, Maximize2,
+  ChevronUp, MousePointer2, Monitor, Maximize2, Mic,
 } from 'lucide-react';
 
 export default function Header({
   theme, toggleTheme, fontSize, increaseFontSize, decreaseFontSize,
   connected, onlineCount, desktopOnline, isElectron,
   opacity, onOpacityChange, clickThrough, toggleClickThrough, toggleControls,
-  resizeOn, toggleResize,
+  resizeOn, toggleResize, tpOpen, toggleTeleprompter, tpActive,
 }) {
   return (
     <header className={`header${isElectron ? ' draggable' : ''}`}>
@@ -16,7 +16,7 @@ export default function Header({
         <span className="app-title">ZYTHOS</span>
       </div>
 
-      {/* ── Center: font size + extras ───────────────────────── */}
+      {/* ── Center: controls ─────────────────────────────────── */}
       <div className="header-center">
         <div className="font-size-controls">
           <button onClick={decreaseFontSize} className="ctrl-btn" disabled={fontSize <= 10} title="Decrease">
@@ -49,9 +49,20 @@ export default function Header({
           <button
             onClick={toggleResize}
             className={`ctrl-btn resize-btn ${resizeOn ? 'active' : ''}`}
-            title={resizeOn ? 'Resize ON — click to lock size' : 'Resize OFF — click to enable'}
+            title={resizeOn ? 'Resize ON' : 'Resize OFF'}
           >
             <Maximize2 size={13} />
+          </button>
+        )}
+
+        {/* Teleprompter toggle — exe only */}
+        {isElectron && (
+          <button
+            onClick={toggleTeleprompter}
+            className={`ctrl-btn tp-toggle-btn ${tpOpen ? 'active' : ''} ${tpActive ? 'tp-live' : ''}`}
+            title="Teleprompter"
+          >
+            <Mic size={13} />
           </button>
         )}
       </div>

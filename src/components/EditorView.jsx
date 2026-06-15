@@ -10,8 +10,11 @@ import Placeholder from '@tiptap/extension-placeholder';
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
 import { common, createLowlight } from 'lowlight';
 import CommentHighlight from '../extensions/CommentHighlight';
+import { TeleprompterExtension } from '../extensions/TeleprompterExtension';
+import useTeleprompter from '../hooks/useTeleprompter';
 import Toolbar from './Toolbar';
 import Header from './Header';
+import TeleprompterPanel from './TeleprompterPanel';
 import { getColorForUser } from '../utils/colors';
 
 const lowlight = createLowlight(common);
@@ -25,6 +28,7 @@ export default function EditorView({
   const [opacity, setOpacity] = useState(1);
   const [clickThrough, setClickThrough] = useState(false);
   const [resizeOn, setResizeOn] = useState(false);
+  const [tpOpen, setTpOpen] = useState(false);
 
   const lastLocalToggle = useRef(0);
   const userColor = getColorForUser(user.name);
@@ -56,6 +60,7 @@ export default function EditorView({
       StarterKit.configure({ history: false, codeBlock: false }),
       CodeBlockLowlight.configure({ lowlight }),
       CommentHighlight,
+      TeleprompterExtension,
       Underline,
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       Highlight.configure({ multicolor: true }),
@@ -70,6 +75,9 @@ export default function EditorView({
       attributes: { class: 'editor-content', spellcheck: 'true' },
     },
   });
+
+  // ─── Teleprompter hook ──────────────────────────────────────────────────
+  const tp = useTeleprompter(editor);
 
   // ─── Y.js shared controls map ────────────────────────────────────────────
   const controlsMap = useMemo(() => ydoc.getMap('controls'), [ydoc]);
@@ -97,13 +105,13 @@ export default function EditorView({
     return cleanup;
   }, [controlsMap, isElectron]);
 
-  // ─── Opacity (exe only — CSS variable, text stays visible) ───────────────
+  // ─── Opacity (exe only — CSS variable) ───────────────────────────────────
   const handleOpacityChange = useCallback((val) => {
     setOpacity(val);
     document.documentElement.style.setProperty('--app-alpha', val.toString());
   }, []);
 
-  // ─── Resize toggle (exe only) ────────────────────────────────────────────
+  // ─── Resize toggle ──────────────────────────────────────────────────────
   const toggleResize = useCallback(() => {
     const next = !resizeOn;
     setResizeOn(next);
@@ -112,13 +120,19 @@ export default function EditorView({
     }
   }, [resizeOn, isElectron]);
 
-  // ─── Web toggles click-through for exe ────────────────────────────────────
+  // ─── Click-through (web → exe) ──────────────────────────────────────────
   const toggleClickThrough = useCallback(() => {
     const current = controlsMap.get('clickThrough') ?? false;
     controlsMap.set('clickThrough', !current);
   }, [controlsMap]);
 
   const toggleControls = useCallback(() => setControlsVisible((v) => !v), []);
+  const toggleTeleprompter = useCallback(() => {
+    setTpOpen((v) => {
+      if (v && tp.isActive) tp.stop(); // close panel → stop
+      return !v;
+    });
+  }, [tp]);
 
   return (
     <div className={`app ${isElectron ? 'electron-mode' : 'web-mode'}`} data-theme={theme}>
@@ -141,8 +155,24 @@ export default function EditorView({
             toggleControls={toggleControls}
             resizeOn={resizeOn}
             toggleResize={toggleResize}
+            tpOpen={tpOpen}
+            toggleTeleprompter={toggleTeleprompter}
+            tpActive={tp.isActive}
           />
           <Toolbar editor={editor} />
+          {isElectron && tpOpen && (
+            <TeleprompterPanel
+              devices={tp.devices}
+              selectedDevice={tp.selectedDevice}
+              onDeviceChange={tp.setSelectedDevice}
+              onRefresh={tp.refreshDevices}
+              isActive={tp.isActive}
+              onStart={tp.start}
+              onStop={tp.stop}
+              status={tp.status}
+              progress={tp.progress}
+            />
+          )}
         </>
       )}
 
