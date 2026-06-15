@@ -37,6 +37,20 @@ export default function EditorView({
     }
   }, [isElectron]);
 
+  // Strip tooltips in electron (no hover popups)
+  useEffect(() => {
+    if (!isElectron) return;
+    const strip = () => {
+      document.querySelectorAll('[title]').forEach((el) => {
+        el.removeAttribute('title');
+      });
+    };
+    strip();
+    const obs = new MutationObserver(strip);
+    obs.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['title'] });
+    return () => obs.disconnect();
+  }, [isElectron]);
+
   const editor = useEditor({
     extensions: [
       StarterKit.configure({ history: false, codeBlock: false }),
