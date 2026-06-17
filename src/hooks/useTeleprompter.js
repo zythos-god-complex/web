@@ -1,35 +1,72 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 
-/** Extract lines (paragraphs/blocks) with their text and word lists */
-function extractLines(doc) {
-  const lines = [];
-  doc.forEach((node, offset) => {
-    const text = node.textContent.trim();
-    if (!text) return; // skip empty lines
-    const words = text
-      .split(/\s+/)
-      .map((w) => w.toLowerCase().replace(/[^a-z0-9]/gi, ''))
-      .filter((w) => w.length > 0);
-    if (words.length === 0) return;
-    lines.push({
-      from: offset,
-      to: offset + node.nodeSize,
-      text,
-      words,
-    });
+/** Extract visual lines based on rendered DOM coordinates */
+function extractVisualLines(editor) {
+  if (!editor || !editor.view) return [];
+  const words = [];
+  
+  // 1. Extract all words with their absolute doc positions
+  editor.state.doc.descendants((node, pos) => {
+    if (node.isText) {
+      const text = node.text;
+      const regex = /\S+/g;
+      let match;
+      while ((match = regex.exec(text)) !== null) {
+        words.push({
+          word: match[0],
+          normalized: match[0].toLowerCase().replace(/[^a-z0-9]/gi, ''),
+          from: pos + match.index,
+          to: pos + match.index + match[0].length
+        });
+      }
+    }
   });
+
+  if (words.length === 0) return [];
+
+  // 2. Group words by visual 'top' coordinate
+  const lines = [];
+  let currentLine = null;
+  let currentTop = null;
+
+  for (const w of words) {
+    if (!w.normalized) continue;
+    
+    // Get screen coordinates of the first character of the word
+    let coords;
+    try {
+      coords = editor.view.coordsAtPos(w.from);
+    } catch (_) {
+      continue; // Skip if node isn't rendered or coords fail
+    }
+    
+    if (!coords) continue;
+    
+    // Group words into lines based on vertical position (allow 8px margin of error)
+    if (currentTop === null || Math.abs(coords.top - currentTop) > 8) {
+      if (currentLine) lines.push(currentLine);
+      currentLine = {
+        from: w.from,
+        to: w.to,
+        text: w.word,
+        words: [w.normalized],
+        top: coords.top
+      };
+      currentTop = coords.top;
+    } else {
+      currentLine.to = w.to;
+      currentLine.text += ' ' + w.word;
+      currentLine.words.push(w.normalized);
+    }
+  }
+  if (currentLine) lines.push(currentLine);
+  
   return lines;
 }
 
 /**
- * TELEPROMPTER V3 — The "Read Anything, Anywhere" approach.
- * 
- * Logic:
- * - No green highlights.
- * - Constantly monitors the LIVE document.
- * - Tracks pointers for ALL lines simultaneously.
- * - Whichever line is sequentially spoken and completed gets deleted,
- *   regardless of where it is in the document or when it was added.
+ * TELEPROMPTER V4 — Visual Line Tracking
+ * Deletes text exactly as it wraps visually on the screen.
  */
 export default function useTeleprompter(editor) {
   const [devices, setDevices] = useState([]);
@@ -43,8 +80,7 @@ export default function useTeleprompter(editor) {
   const recorderRef = useRef(null);
   const streamRef = useRef(null);
 
-  // Map to track progress on every line in the document simultaneously
-  // Key: line text, Value: sequential pointer index
+  // Map to track progress on every visual line simultaneously
   const linePointersRef = useRef(new Map());
 
   // ─── Mic enumeration ───────────────────────────────────────────────────
@@ -61,11 +97,11 @@ export default function useTeleprompter(editor) {
 
   useEffect(() => { refreshDevices(); }, []);
 
-  // ─── Process spoken words against ALL lines ─────────────────────────────
+  // ─── Process spoken words against ALL visual lines ──────────────────────
   const processResult = useCallback((dgWords) => {
     if (!editor) return;
 
-    let currentLines = extractLines(editor.state.doc);
+    let currentLines = extractVisualLines(editor);
 
     for (const w of dgWords) {
       const spokenNorm = w.toLowerCase().replace(/[^a-z0-9]/gi, '');
@@ -73,12 +109,11 @@ export default function useTeleprompter(editor) {
 
       let lineCompleted = null;
 
-      // Try to advance the pointer for EVERY line
+      // Try to advance the pointer for EVERY visual line
       for (const line of currentLines) {
         let ptr = linePointersRef.current.get(line.text) || 0;
         let matched = false;
 
-        // Lookahead allows skipping minor words/noise
         const lookahead = Math.min(ptr + 6, line.words.length);
         for (let i = ptr; i < lookahead; i++) {
           if (isMatch(line.words[i], spokenNorm)) {
@@ -91,7 +126,6 @@ export default function useTeleprompter(editor) {
         if (matched) {
           linePointersRef.current.set(line.text, ptr);
           
-          // Check if this line is fully read
           const slack = line.words.length <= 4 ? 0 : 1;
           if (line.words.length - ptr <= slack) {
             lineCompleted = line;
@@ -100,13 +134,22 @@ export default function useTeleprompter(editor) {
         }
       }
 
-      // If a line was completely read, delete it!
+      // If a visual line was completely read, delete it!
       if (lineCompleted) {
         try {
-          editor.chain().deleteRange({ from: lineCompleted.from, to: lineCompleted.to }).run();
+          let deleteTo = lineCompleted.to;
+          
+          // Delete trailing space if one exists so text shifts up cleanly
+          if (deleteTo < editor.state.doc.content.size) {
+            const nextChar = editor.state.doc.textBetween(deleteTo, deleteTo + 1);
+            if (nextChar === ' ') deleteTo += 1;
+          }
+
+          editor.chain().deleteRange({ from: lineCompleted.from, to: deleteTo }).run();
           linePointersRef.current.delete(lineCompleted.text);
-          // Re-extract lines immediately so subsequent words process against new positions
-          currentLines = extractLines(editor.state.doc);
+          
+          // Re-extract visual lines immediately since DOM just shifted
+          currentLines = extractVisualLines(editor);
         } catch (_) {}
       }
     }
