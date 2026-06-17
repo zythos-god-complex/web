@@ -82,7 +82,6 @@ export default function useTeleprompter(editor) {
 
   // Map to track progress on every visual line simultaneously
   const linePointersRef = useRef(new Map());
-  const utteranceProcessedRef = useRef(0);
 
   // ─── Mic enumeration ───────────────────────────────────────────────────
   const refreshDevices = useCallback(async () => {
@@ -201,28 +200,13 @@ export default function useTeleprompter(editor) {
         if (data.type !== 'Results') return;
         const alt = data.channel?.alternatives?.[0];
         if (!alt || !alt.transcript?.trim()) return;
-        
-        const isFinal = data.is_final;
+        if (!data.is_final) return;
+
         const words = alt.words
           ? alt.words.map((w) => w.word)
           : alt.transcript.trim().split(/\s+/);
 
-        // ─── INSTANT INTERIM PROCESSING ────────────────────────────
-        // Instead of waiting for is_final (which causes 1-2s latency), 
-        // we process interim guesses instantly. To avoid double-counting 
-        // words as Deepgram updates its guesses, we track how many words 
-        // we've already processed in the current breath/utterance.
-        const newWords = words.slice(utteranceProcessedRef.current);
-        
-        if (newWords.length > 0) {
-          processResult(newWords);
-          utteranceProcessedRef.current += newWords.length;
-        }
-
-        // When the breath/utterance is finalized, reset the cursor for the next sentence
-        if (isFinal) {
-          utteranceProcessedRef.current = 0;
-        }
+        processResult(words);
       } catch (_) {}
     };
 
@@ -264,7 +248,6 @@ export default function useTeleprompter(editor) {
     }
 
     linePointersRef.current.clear();
-    utteranceProcessedRef.current = 0;
     isActiveRef.current = true;
     setIsActive(true);
 
@@ -278,7 +261,6 @@ export default function useTeleprompter(editor) {
     setStatus('idle');
     setProgress('');
     linePointersRef.current.clear();
-    utteranceProcessedRef.current = 0;
 
     if (recorderRef.current) {
       try { if (recorderRef.current.state !== 'inactive') recorderRef.current.stop(); } catch (_) {}
