@@ -4,7 +4,10 @@ import {
 } from '../extensions/TeleprompterExtension';
 
 /**
- * LINE-BY-LINE teleprompter — sequential word tracking with re-entrance guard.
+ * LINE-BY-LINE teleprompter — sequential tracking with:
+ *  - Snapshot-based: only tracks lines that existed when started (ignores new lines)
+ *  - Persistent: auto-reconnects Deepgram if connection drops
+ *  - No logging UI
  */
 export default function useTeleprompter(editor) {
   const [devices, setDevices] = useState([]);
@@ -12,80 +15,78 @@ export default function useTeleprompter(editor) {
   const [isActive, setIsActive] = useState(false);
   const [status, setStatus] = useState('idle');
   const [progress, setProgress] = useState('');
-  const [log, setLog] = useState('');
 
   const isActiveRef = useRef(false);
   const linesRef = useRef([]);
   const linePointerRef = useRef(0);
-  const completingRef = useRef(false); // ← RE-ENTRANCE GUARD
+  const completingRef = useRef(false);
   const wsRef = useRef(null);
   const recorderRef = useRef(null);
   const streamRef = useRef(null);
 
-  const addLog = useCallback((msg) => {
-    const ts = new Date().toLocaleTimeString();
-    const line = `[${ts}] ${msg}`;
-    console.log('[TP]', msg);
-    setLog((prev) => {
-      const arr = prev ? prev.split('\n') : [];
-      arr.push(line);
-      return arr.slice(-40).join('\n');
-    });
-  }, []);
+  // Snapshot: ordered list of original line texts to track
+  const snapshotRef = useRef([]);
+  const snapshotIdxRef = useRef(0);
 
   // ─── Mic enumeration ───────────────────────────────────────────────────
   const refreshDevices = useCallback(async () => {
-    addLog('Scanning mics...');
     try {
       const s = await navigator.mediaDevices.getUserMedia({ audio: true });
       s.getTracks().forEach((t) => t.stop());
       const all = await navigator.mediaDevices.enumerateDevices();
       const mics = all.filter((d) => d.kind === 'audioinput');
       setDevices(mics);
-      addLog(`Found ${mics.length} mic(s)`);
       if (mics.length && !selectedDevice) setSelectedDevice(mics[0].deviceId);
-    } catch (err) {
-      addLog(`Mic error: ${err.message}`);
-    }
-  }, [selectedDevice, addLog]);
+    } catch (_) {}
+  }, [selectedDevice]);
 
   useEffect(() => { refreshDevices(); }, []);
 
-  // ─── Refresh lines & highlight ──────────────────────────────────────────
-  const reExtractAndHighlight = useCallback(() => {
-    if (!editor || !editor.view) return;
-    const lines = extractLines(editor.state.doc);
-    linesRef.current = lines;
-    linePointerRef.current = 0;
+  // ─── Find the current snapshot line in the doc ──────────────────────────
+  const findCurrentLine = useCallback(() => {
+    if (!editor || !editor.view) return null;
+    const expectedText = snapshotRef.current[snapshotIdxRef.current];
+    if (!expectedText) return null;
 
-    if (lines.length > 0) {
-      setLineHighlight(editor.view, 0, lines);
-      scrollToLine(editor.view, lines[0].from);
-      setProgress(`Line 1 of ${lines.length}`);
-      addLog(`→ Next line: "${lines[0].text.slice(0, 60)}${lines[0].text.length > 60 ? '…' : ''}"`);
+    const allLines = extractLines(editor.state.doc);
+    // Find the first line whose text matches the expected snapshot text
+    return allLines.find((l) => l.text === expectedText) || null;
+  }, [editor]);
+
+  // ─── Highlight the current snapshot line ────────────────────────────────
+  const highlightCurrent = useCallback(() => {
+    if (!editor || !editor.view) return;
+    const line = findCurrentLine();
+    if (line) {
+      const allLines = extractLines(editor.state.doc);
+      const idx = allLines.indexOf(line);
+      if (idx >= 0) {
+        linesRef.current = allLines;
+        setLineHighlight(editor.view, idx, allLines);
+        scrollToLine(editor.view, line.from);
+      }
+      const remaining = snapshotRef.current.length - snapshotIdxRef.current;
+      setProgress(`${snapshotIdxRef.current + 1} of ${snapshotRef.current.length}`);
     } else {
       clearHighlight(editor.view);
       setProgress('Done!');
-      addLog('🎉 All lines read!');
     }
-
-    // Unblock word processing after re-extraction is done
     completingRef.current = false;
-  }, [editor, addLog]);
+  }, [editor, findCurrentLine]);
 
-  // ─── Process spoken words from a single Deepgram result ─────────────────
+  // ─── Process spoken words ───────────────────────────────────────────────
   const processResult = useCallback((dgWords) => {
-    // If we're in the middle of completing a line, queue nothing — skip
     if (completingRef.current) return;
 
-    const lines = linesRef.current;
-    if (lines.length === 0) return;
+    const line = findCurrentLine();
+    if (!line) return;
 
-    const currentLine = lines[0];
-    const lineWords = currentLine.words;
+    const lineWords = line.text
+      .split(/\s+/)
+      .map((w) => w.toLowerCase().replace(/[^a-z0-9]/gi, ''))
+      .filter((w) => w.length > 0);
 
     for (const w of dgWords) {
-      // Re-check guard inside loop (a previous word in this batch may have triggered completion)
       if (completingRef.current) return;
 
       const spokenNorm = w.toLowerCase().replace(/[^a-z0-9]/gi, '');
@@ -106,135 +107,148 @@ export default function useTeleprompter(editor) {
       const slack = lineWords.length <= 4 ? 0 : 1;
 
       if (wordsLeft <= slack) {
-        // ── LINE COMPLETE ──
-        completingRef.current = true; // BLOCK further processing
+        completingRef.current = true;
 
-        addLog(`✅ Line done (${linePointerRef.current}/${lineWords.length} words)`);
-        addLog(`   "${currentLine.text.slice(0, 80)}${currentLine.text.length > 80 ? '…' : ''}"`);
-
+        // Delete the line from the doc
         try {
-          editor.chain().deleteRange({ from: currentLine.from, to: currentLine.to }).run();
-        } catch (err) {
-          addLog(`Delete err: ${err.message}`);
-        }
+          editor.chain().deleteRange({ from: line.from, to: line.to }).run();
+        } catch (_) {}
 
-        // Re-extract after editor settles (completingRef stays true until reExtract finishes)
-        setTimeout(() => reExtractAndHighlight(), 120);
-        return; // Stop processing remaining words in this batch
+        // Advance snapshot
+        snapshotIdxRef.current++;
+        linePointerRef.current = 0;
+
+        // Re-highlight after editor settles
+        setTimeout(() => highlightCurrent(), 120);
+        return;
       }
     }
-  }, [editor, addLog, reExtractAndHighlight]);
+  }, [editor, findCurrentLine, highlightCurrent]);
 
-  // ─── Start ──────────────────────────────────────────────────────────────
-  const start = useCallback(async () => {
-    if (!editor || isActiveRef.current) return;
-
+  // ─── Connect to Deepgram ────────────────────────────────────────────────
+  const connectDeepgram = useCallback(() => {
     const apiKey = window.electronAPI?.deepgramKey;
-    if (!apiKey) {
-      addLog('ERROR: No Deepgram API key');
-      setStatus('error');
-      return;
-    }
-
-    try {
-      const constraints = selectedDevice
-        ? { audio: { deviceId: { exact: selectedDevice } } }
-        : { audio: true };
-      streamRef.current = await navigator.mediaDevices.getUserMedia(constraints);
-      addLog(`Mic: ${streamRef.current.getAudioTracks()[0]?.label || '?'}`);
-    } catch (err) {
-      addLog(`Mic denied: ${err.message}`);
-      setStatus('error');
-      return;
-    }
-
-    linesRef.current = extractLines(editor.state.doc);
-    linePointerRef.current = 0;
-    completingRef.current = false;
-
-    if (linesRef.current.length === 0) {
-      addLog('No text');
-      setStatus('idle');
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      return;
-    }
-
-    addLog(`${linesRef.current.length} lines to read`);
-    setLineHighlight(editor.view, 0, linesRef.current);
-    scrollToLine(editor.view, linesRef.current[0].from);
+    if (!apiKey || !streamRef.current) return;
 
     const dgUrl = 'wss://api.deepgram.com/v1/listen?model=nova-2&language=en-IN&interim_results=true&punctuate=false&smart_format=false&filler_words=false';
-    addLog('Connecting to Deepgram (en-IN)...');
 
     let ws;
     try {
       ws = new WebSocket(dgUrl, ['token', apiKey]);
-    } catch (err) {
-      addLog(`WS failed: ${err.message}`);
+    } catch (_) {
       setStatus('error');
       return;
     }
     wsRef.current = ws;
 
     ws.onopen = () => {
-      addLog('✅ Deepgram connected');
+      setStatus('listening');
 
       let mimeType = 'audio/webm;codecs=opus';
       if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'audio/webm';
 
       try {
+        // Stop existing recorder if any
+        if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+          try { recorderRef.current.stop(); } catch (_) {}
+        }
+
         const recorder = new MediaRecorder(streamRef.current, { mimeType });
         recorder.ondataavailable = (e) => {
           if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) ws.send(e.data);
         };
         recorder.start(250);
         recorderRef.current = recorder;
-      } catch (err) {
-        addLog(`Recorder error: ${err.message}`);
+      } catch (_) {
         setStatus('error');
         return;
       }
-
-      isActiveRef.current = true;
-      setIsActive(true);
-      setStatus('listening');
-      setProgress(`Line 1 of ${linesRef.current.length}`);
-      addLog('🎙 Speak now — read the highlighted line');
     };
 
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
         if (data.type !== 'Results') return;
-
         const alt = data.channel?.alternatives?.[0];
         if (!alt || !alt.transcript?.trim()) return;
-
-        const transcript = alt.transcript.trim();
-        const isFinal = data.is_final;
-        addLog(`${isFinal ? '✓' : '…'} "${transcript}"`);
-
-        // Only process FINAL results for line tracking (avoids interim noise)
-        if (!isFinal) return;
+        if (!data.is_final) return; // Only process final results
 
         const words = alt.words
           ? alt.words.map((w) => w.word)
-          : transcript.split(/\s+/);
+          : alt.transcript.trim().split(/\s+/);
 
         processResult(words);
-      } catch (err) {
-        addLog(`Parse: ${err.message}`);
+      } catch (_) {}
+    };
+
+    ws.onerror = () => setStatus('reconnecting');
+
+    ws.onclose = () => {
+      // ── PERSISTENT: auto-reconnect if still active ──
+      if (isActiveRef.current) {
+        setStatus('reconnecting');
+        // Stop current recorder
+        if (recorderRef.current) {
+          try { if (recorderRef.current.state !== 'inactive') recorderRef.current.stop(); } catch (_) {}
+          recorderRef.current = null;
+        }
+        // Reconnect after 2 seconds
+        setTimeout(() => {
+          if (isActiveRef.current && streamRef.current) {
+            connectDeepgram();
+          }
+        }, 2000);
       }
     };
+  }, [processResult]);
 
-    ws.onerror = () => { addLog('❌ WS error'); setStatus('error'); };
-    ws.onclose = (e) => {
-      addLog(`WS closed (${e.code})`);
-      if (isActiveRef.current) cleanupInternal();
-    };
-  }, [editor, selectedDevice, addLog, processResult, reExtractAndHighlight]);
+  // ─── Start ──────────────────────────────────────────────────────────────
+  const start = useCallback(async () => {
+    if (!editor || isActiveRef.current) return;
 
-  // ─── Cleanup ────────────────────────────────────────────────────────────
+    if (!window.electronAPI?.deepgramKey) {
+      setStatus('error');
+      return;
+    }
+
+    // Get mic
+    try {
+      const constraints = selectedDevice
+        ? { audio: { deviceId: { exact: selectedDevice } } }
+        : { audio: true };
+      streamRef.current = await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (_) {
+      setStatus('error');
+      return;
+    }
+
+    // Snapshot lines
+    const lines = extractLines(editor.state.doc);
+    if (lines.length === 0) {
+      setStatus('idle');
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      return;
+    }
+
+    snapshotRef.current = lines.map((l) => l.text);
+    snapshotIdxRef.current = 0;
+    linePointerRef.current = 0;
+    completingRef.current = false;
+    linesRef.current = lines;
+
+    // Highlight first line
+    setLineHighlight(editor.view, 0, lines);
+    scrollToLine(editor.view, lines[0].from);
+
+    isActiveRef.current = true;
+    setIsActive(true);
+    setProgress(`1 of ${lines.length}`);
+
+    // Connect
+    connectDeepgram();
+  }, [editor, selectedDevice, connectDeepgram]);
+
+  // ─── Stop ───────────────────────────────────────────────────────────────
   const cleanupInternal = useCallback(() => {
     isActiveRef.current = false;
     setIsActive(false);
@@ -242,6 +256,8 @@ export default function useTeleprompter(editor) {
     setProgress('');
     linePointerRef.current = 0;
     completingRef.current = false;
+    snapshotRef.current = [];
+    snapshotIdxRef.current = 0;
 
     if (recorderRef.current) {
       try { if (recorderRef.current.state !== 'inactive') recorderRef.current.stop(); } catch (_) {}
@@ -263,14 +279,11 @@ export default function useTeleprompter(editor) {
     if (editor && editor.view) clearHighlight(editor.view);
   }, [editor]);
 
-  const stop = useCallback(() => {
-    addLog('Stopped');
-    cleanupInternal();
-  }, [addLog, cleanupInternal]);
+  const stop = useCallback(() => cleanupInternal(), [cleanupInternal]);
 
   useEffect(() => () => { if (isActiveRef.current) cleanupInternal(); }, [cleanupInternal]);
 
-  return { devices, selectedDevice, setSelectedDevice, isActive, status, progress, log, start, stop, refreshDevices };
+  return { devices, selectedDevice, setSelectedDevice, isActive, status, progress, start, stop, refreshDevices };
 }
 
 // ─── Fuzzy matching ──────────────────────────────────────────────────────────
