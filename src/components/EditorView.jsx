@@ -15,6 +15,8 @@ import Header from './Header';
 import { getColorForUser } from '../utils/colors';
 import useTeleprompter from '../hooks/useTeleprompter';
 import TeleprompterPanel from './TeleprompterPanel';
+import useInterviewerAI from '../hooks/useInterviewerAI';
+import InterviewerPanel from './InterviewerPanel';
 
 const lowlight = createLowlight(common);
 
@@ -28,6 +30,8 @@ export default function EditorView({
   const [clickThrough, setClickThrough] = useState(false);
   const [resizeOn, setResizeOn] = useState(false);
   const [tpOpen, setTpOpen] = useState(false);
+  const [showResume, setShowResume] = useState(false);
+  const [resumeText, setResumeText] = useState('');
 
   const lastLocalToggle = useRef(0);
   const userColor = getColorForUser(user.name);
@@ -75,11 +79,19 @@ export default function EditorView({
   });
 
   const tp = useTeleprompter(editor);
+  const interviewerAI = useInterviewerAI(editor, ydoc);
 
   // ─── Y.js shared controls map ────────────────────────────────────────────
   const controlsMap = useMemo(() => ydoc.getMap('controls'), [ydoc]);
 
   useEffect(() => {
+    const context = ydoc.getMap('context');
+    
+    // Sync resume from Y.js
+    const updateResume = () => setResumeText(context.get('resume') || '');
+    context.observe(updateResume);
+    updateResume();
+    
     const handler = () => {
       if (Date.now() - lastLocalToggle.current < 300) return;
       const ct = controlsMap.get('clickThrough') ?? false;
@@ -89,8 +101,11 @@ export default function EditorView({
       }
     };
     controlsMap.observe(handler);
-    return () => controlsMap.unobserve(handler);
-  }, [controlsMap, isElectron]);
+    return () => {
+      controlsMap.unobserve(handler);
+      context.unobserve(updateResume);
+    };
+  }, [controlsMap, ydoc, isElectron]);
 
   useEffect(() => {
     if (!isElectron || !window.electronAPI?.onClickThroughChanged) return;
@@ -116,6 +131,13 @@ export default function EditorView({
       window.electronAPI.setResizable(next);
     }
   }, [resizeOn, isElectron]);
+
+  // Handle local resume changes
+  const handleResumeChange = (e) => {
+    const text = e.target.value;
+    setResumeText(text);
+    ydoc.getMap('context').set('resume', text);
+  };
 
   // ─── Click-through (web → exe) ──────────────────────────────────────────
   const toggleClickThrough = useCallback(() => {
@@ -158,17 +180,44 @@ export default function EditorView({
           />
           <Toolbar editor={editor} />
           {isElectron && tpOpen && (
-            <TeleprompterPanel
-              devices={tp.devices}
-              selectedDevice={tp.selectedDevice}
-              onDeviceChange={tp.setSelectedDevice}
-              onRefresh={tp.refreshDevices}
-              isActive={tp.isActive}
-              onStart={tp.start}
-              onStop={tp.stop}
-              status={tp.status}
-              progress={tp.progress}
-            />
+            <>
+              <TeleprompterPanel
+                devices={tp.devices}
+                selectedDevice={tp.selectedDevice}
+                onDeviceChange={tp.setSelectedDevice}
+                onRefresh={tp.refreshDevices}
+                isActive={tp.isActive}
+                onStart={tp.start}
+                onStop={tp.stop}
+                status={tp.status}
+                progress={tp.progress}
+              />
+              
+              <InterviewerPanel
+                devices={interviewerAI.devices}
+                selectedDevice={interviewerAI.selectedDevice}
+                onDeviceChange={interviewerAI.setSelectedDevice}
+                onRefresh={interviewerAI.refreshDevices}
+                isActive={interviewerAI.isActive}
+                onStart={interviewerAI.start}
+                onStop={interviewerAI.stop}
+                status={interviewerAI.status}
+              />
+
+              <div className="tp-panel" style={{ display: 'flex', flexDirection: 'column', gap: '4px', background: '#0f172a' }}>
+                <button onClick={() => setShowResume(!showResume)} className="tp-action-btn" style={{ background: '#334155', width: 'fit-content' }}>
+                  {showResume ? 'Hide Context/Resume' : 'Edit Context/Resume'}
+                </button>
+                {showResume && (
+                  <textarea 
+                    value={resumeText}
+                    onChange={handleResumeChange}
+                    placeholder="Paste Candidate Resume or Context here..."
+                    style={{ width: '100%', height: '100px', background: '#1e293b', color: '#fff', border: '1px solid #475569', borderRadius: '4px', padding: '6px', fontSize: '12px' }}
+                  />
+                )}
+              </div>
+            </>
           )}
         </>
       )}
