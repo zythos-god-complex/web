@@ -1,13 +1,35 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import {
-  extractLines, setLineHighlight, clearHighlight, scrollToLine,
-} from '../extensions/TeleprompterExtension';
+
+/** Extract lines (paragraphs/blocks) with their text and word lists */
+function extractLines(doc) {
+  const lines = [];
+  doc.forEach((node, offset) => {
+    const text = node.textContent.trim();
+    if (!text) return; // skip empty lines
+    const words = text
+      .split(/\s+/)
+      .map((w) => w.toLowerCase().replace(/[^a-z0-9]/gi, ''))
+      .filter((w) => w.length > 0);
+    if (words.length === 0) return;
+    lines.push({
+      from: offset,
+      to: offset + node.nodeSize,
+      text,
+      words,
+    });
+  });
+  return lines;
+}
 
 /**
- * LINE-BY-LINE teleprompter — sequential tracking with:
- *  - Snapshot-based: only tracks lines that existed when started (ignores new lines)
- *  - Persistent: auto-reconnects Deepgram if connection drops
- *  - No logging UI
+ * TELEPROMPTER V3 — The "Read Anything, Anywhere" approach.
+ * 
+ * Logic:
+ * - No green highlights.
+ * - Constantly monitors the LIVE document.
+ * - Tracks pointers for ALL lines simultaneously.
+ * - Whichever line is sequentially spoken and completed gets deleted,
+ *   regardless of where it is in the document or when it was added.
  */
 export default function useTeleprompter(editor) {
   const [devices, setDevices] = useState([]);
@@ -17,16 +39,13 @@ export default function useTeleprompter(editor) {
   const [progress, setProgress] = useState('');
 
   const isActiveRef = useRef(false);
-  const linesRef = useRef([]);
-  const linePointerRef = useRef(0);
-  const completingRef = useRef(false);
   const wsRef = useRef(null);
   const recorderRef = useRef(null);
   const streamRef = useRef(null);
 
-  // Snapshot: ordered list of original line texts to track
-  const snapshotRef = useRef([]);
-  const snapshotIdxRef = useRef(0);
+  // Map to track progress on every line in the document simultaneously
+  // Key: line text, Value: sequential pointer index
+  const linePointersRef = useRef(new Map());
 
   // ─── Mic enumeration ───────────────────────────────────────────────────
   const refreshDevices = useCallback(async () => {
@@ -42,88 +61,56 @@ export default function useTeleprompter(editor) {
 
   useEffect(() => { refreshDevices(); }, []);
 
-  // ─── Find the current snapshot line in the doc ──────────────────────────
-  const findCurrentLine = useCallback(() => {
-    if (!editor || !editor.view) return null;
-    const expectedText = snapshotRef.current[snapshotIdxRef.current];
-    if (!expectedText) return null;
-
-    const allLines = extractLines(editor.state.doc);
-    // Find the first line whose text matches the expected snapshot text
-    return allLines.find((l) => l.text === expectedText) || null;
-  }, [editor]);
-
-  // ─── Highlight the current snapshot line ────────────────────────────────
-  const highlightCurrent = useCallback(() => {
-    if (!editor || !editor.view) return;
-    const line = findCurrentLine();
-    if (line) {
-      const allLines = extractLines(editor.state.doc);
-      const idx = allLines.indexOf(line);
-      if (idx >= 0) {
-        linesRef.current = allLines;
-        setLineHighlight(editor.view, idx, allLines);
-        scrollToLine(editor.view, line.from);
-      }
-      const remaining = snapshotRef.current.length - snapshotIdxRef.current;
-      setProgress(`${snapshotIdxRef.current + 1} of ${snapshotRef.current.length}`);
-    } else {
-      clearHighlight(editor.view);
-      setProgress('Done!');
-    }
-    completingRef.current = false;
-  }, [editor, findCurrentLine]);
-
-  // ─── Process spoken words ───────────────────────────────────────────────
+  // ─── Process spoken words against ALL lines ─────────────────────────────
   const processResult = useCallback((dgWords) => {
-    if (completingRef.current) return;
+    if (!editor) return;
 
-    const line = findCurrentLine();
-    if (!line) return;
-
-    const lineWords = line.text
-      .split(/\s+/)
-      .map((w) => w.toLowerCase().replace(/[^a-z0-9]/gi, ''))
-      .filter((w) => w.length > 0);
+    let currentLines = extractLines(editor.state.doc);
 
     for (const w of dgWords) {
-      if (completingRef.current) return;
-
       const spokenNorm = w.toLowerCase().replace(/[^a-z0-9]/gi, '');
       if (!spokenNorm) continue;
 
-      const ptr = linePointerRef.current;
-      const lookahead = Math.min(ptr + 6, lineWords.length);
+      let lineCompleted = null;
 
-      for (let i = ptr; i < lookahead; i++) {
-        if (isMatch(lineWords[i], spokenNorm)) {
-          linePointerRef.current = i + 1;
-          break;
+      // Try to advance the pointer for EVERY line
+      for (const line of currentLines) {
+        let ptr = linePointersRef.current.get(line.text) || 0;
+        let matched = false;
+
+        // Lookahead allows skipping minor words/noise
+        const lookahead = Math.min(ptr + 6, line.words.length);
+        for (let i = ptr; i < lookahead; i++) {
+          if (isMatch(line.words[i], spokenNorm)) {
+            ptr = i + 1; // Advance past matched word
+            matched = true;
+            break;
+          }
+        }
+
+        if (matched) {
+          linePointersRef.current.set(line.text, ptr);
+          
+          // Check if this line is fully read
+          const slack = line.words.length <= 4 ? 0 : 1;
+          if (line.words.length - ptr <= slack) {
+            lineCompleted = line;
+            break; // Stop checking other lines for this word
+          }
         }
       }
 
-      // Check end-of-line
-      const wordsLeft = lineWords.length - linePointerRef.current;
-      const slack = lineWords.length <= 4 ? 0 : 1;
-
-      if (wordsLeft <= slack) {
-        completingRef.current = true;
-
-        // Delete the line from the doc
+      // If a line was completely read, delete it!
+      if (lineCompleted) {
         try {
-          editor.chain().deleteRange({ from: line.from, to: line.to }).run();
+          editor.chain().deleteRange({ from: lineCompleted.from, to: lineCompleted.to }).run();
+          linePointersRef.current.delete(lineCompleted.text);
+          // Re-extract lines immediately so subsequent words process against new positions
+          currentLines = extractLines(editor.state.doc);
         } catch (_) {}
-
-        // Advance snapshot
-        snapshotIdxRef.current++;
-        linePointerRef.current = 0;
-
-        // Re-highlight after editor settles
-        setTimeout(() => highlightCurrent(), 120);
-        return;
       }
     }
-  }, [editor, findCurrentLine, highlightCurrent]);
+  }, [editor]);
 
   // ─── Connect to Deepgram ────────────────────────────────────────────────
   const connectDeepgram = useCallback(() => {
@@ -148,7 +135,6 @@ export default function useTeleprompter(editor) {
       if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'audio/webm';
 
       try {
-        // Stop existing recorder if any
         if (recorderRef.current && recorderRef.current.state !== 'inactive') {
           try { recorderRef.current.stop(); } catch (_) {}
         }
@@ -171,7 +157,7 @@ export default function useTeleprompter(editor) {
         if (data.type !== 'Results') return;
         const alt = data.channel?.alternatives?.[0];
         if (!alt || !alt.transcript?.trim()) return;
-        if (!data.is_final) return; // Only process final results
+        if (!data.is_final) return;
 
         const words = alt.words
           ? alt.words.map((w) => w.word)
@@ -184,15 +170,12 @@ export default function useTeleprompter(editor) {
     ws.onerror = () => setStatus('reconnecting');
 
     ws.onclose = () => {
-      // ── PERSISTENT: auto-reconnect if still active ──
       if (isActiveRef.current) {
         setStatus('reconnecting');
-        // Stop current recorder
         if (recorderRef.current) {
           try { if (recorderRef.current.state !== 'inactive') recorderRef.current.stop(); } catch (_) {}
           recorderRef.current = null;
         }
-        // Reconnect after 2 seconds
         setTimeout(() => {
           if (isActiveRef.current && streamRef.current) {
             connectDeepgram();
@@ -211,7 +194,6 @@ export default function useTeleprompter(editor) {
       return;
     }
 
-    // Get mic
     try {
       const constraints = selectedDevice
         ? { audio: { deviceId: { exact: selectedDevice } } }
@@ -222,29 +204,10 @@ export default function useTeleprompter(editor) {
       return;
     }
 
-    // Snapshot lines
-    const lines = extractLines(editor.state.doc);
-    if (lines.length === 0) {
-      setStatus('idle');
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      return;
-    }
-
-    snapshotRef.current = lines.map((l) => l.text);
-    snapshotIdxRef.current = 0;
-    linePointerRef.current = 0;
-    completingRef.current = false;
-    linesRef.current = lines;
-
-    // Highlight first line
-    setLineHighlight(editor.view, 0, lines);
-    scrollToLine(editor.view, lines[0].from);
-
+    linePointersRef.current.clear();
     isActiveRef.current = true;
     setIsActive(true);
-    setProgress(`1 of ${lines.length}`);
 
-    // Connect
     connectDeepgram();
   }, [editor, selectedDevice, connectDeepgram]);
 
@@ -254,10 +217,7 @@ export default function useTeleprompter(editor) {
     setIsActive(false);
     setStatus('idle');
     setProgress('');
-    linePointerRef.current = 0;
-    completingRef.current = false;
-    snapshotRef.current = [];
-    snapshotIdxRef.current = 0;
+    linePointersRef.current.clear();
 
     if (recorderRef.current) {
       try { if (recorderRef.current.state !== 'inactive') recorderRef.current.stop(); } catch (_) {}
@@ -276,8 +236,7 @@ export default function useTeleprompter(editor) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
-    if (editor && editor.view) clearHighlight(editor.view);
-  }, [editor]);
+  }, []);
 
   const stop = useCallback(() => cleanupInternal(), [cleanupInternal]);
 

@@ -10,12 +10,11 @@ import Placeholder from '@tiptap/extension-placeholder';
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
 import { common, createLowlight } from 'lowlight';
 import CommentHighlight from '../extensions/CommentHighlight';
-import { TeleprompterExtension } from '../extensions/TeleprompterExtension';
-import useTeleprompter from '../hooks/useTeleprompter';
 import Toolbar from './Toolbar';
 import Header from './Header';
-import TeleprompterPanel from './TeleprompterPanel';
 import { getColorForUser } from '../utils/colors';
+import useTeleprompter from '../hooks/useTeleprompter';
+import TeleprompterPanel from './TeleprompterPanel';
 
 const lowlight = createLowlight(common);
 
@@ -60,7 +59,6 @@ export default function EditorView({
       StarterKit.configure({ history: false, codeBlock: false }),
       CodeBlockLowlight.configure({ lowlight }),
       CommentHighlight,
-      TeleprompterExtension,
       Underline,
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       Highlight.configure({ multicolor: true }),
@@ -76,7 +74,6 @@ export default function EditorView({
     },
   });
 
-  // ─── Teleprompter hook ──────────────────────────────────────────────────
   const tp = useTeleprompter(editor);
 
   // ─── Y.js shared controls map ────────────────────────────────────────────
